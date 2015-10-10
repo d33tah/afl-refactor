@@ -4,6 +4,9 @@
 #include <unistd.h>
 #include <string.h>
 
+/* Generate a random number (from 0 to limit - 1). This may
+   have slight bias. */
+
 inline u32 UR(struct g* G, u32 limit) {
 
   if (!G->rand_cnt--) {

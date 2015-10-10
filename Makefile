@@ -23,11 +23,11 @@ DOC_PATH    = $(PREFIX)/share/doc/afl
 MISC_PATH   = $(PREFIX)/share/afl
 
 CFLAGS     ?= -O3 -funroll-loops
-CFLAGS     += -Wall -D_FORTIFY_SOURCE=2 -g -Wno-pointer-sign \
+CFLAGS     += -Werror -Wall -D_FORTIFY_SOURCE=2 -g -Wno-pointer-sign \
 	      -DAFL_PATH=\"$(HELPER_PATH)\" -DDOC_PATH=\"$(DOC_PATH)\" \
 	      -DBIN_PATH=\"$(BIN_PATH)\" -DVERSION=\"$(VERSION)\"
 
-AFL_FUZZ_OBJS = afl-fuzz.o util.o
+AFL_FUZZ_OBJS = afl-fuzz.o fuzzing-engine.o util.o
 
 ifneq "$(filter Linux GNU%,$(shell uname))" ""
   LDFLAGS  += -ldl

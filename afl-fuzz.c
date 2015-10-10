@@ -33,6 +33,7 @@
 #include "hash.h"
 #include "enums.h"
 #include "afl-fuzz.h"
+#include "fuzzing-engine.h"
 #include "util.h"
 
 #include <stdio.h>
@@ -68,10 +69,6 @@
 static s32 *shm_id_ptr, *forksrv_pid_ptr, *child_pid_ptr;
 volatile static u8 *stop_soon_ptr, *skip_requested_ptr, *child_timed_out_ptr;
 static volatile u8 *clear_screen_ptr;
-
-s8  interesting_8[]  = { INTERESTING_8 };
-s16 interesting_16[] = { INTERESTING_8, INTERESTING_16 };
-s32 interesting_32[] = { INTERESTING_8, INTERESTING_16, INTERESTING_32 };
 
 static void init_G(struct g* G) {
   G->exec_tmout = EXEC_TIMEOUT;
@@ -116,33 +113,12 @@ static u64 get_cur_time_us(void) {
 }
 
 
-/* Generate a random number (from 0 to limit - 1). This may
-   have slight bias. */
-
-inline u32 UR(struct g* G, u32 limit) {
-
-  if (!G->rand_cnt--) {
-
-    u32 seed[2];
-
-    ck_read(G->dev_urandom_fd, &seed, sizeof(seed), "/dev/urandom");
-
-    srandom(seed[0]);
-    G->rand_cnt = (RESEED_RNG / 2) + (seed[1] % RESEED_RNG);
-
-  }
-
-  return random() % limit;
-
-}
-
-
 #ifndef IGNORE_FINDS
 
 /* Helper function to compare buffers; returns first and last differing offset. We
    use this to find reasonable locations for splicing two files. */
 
-static void locate_diffs(u8* ptr1, u8* ptr2, u32 len, s32* first, s32* last) {
+void locate_diffs(u8* ptr1, u8* ptr2, u32 len, s32* first, s32* last) {
 
   s32 f_loc = -1;
   s32 l_loc = -1;
@@ -327,7 +303,7 @@ static u8* DTD(u64 cur_ms, u64 event_ms) {
    .state file to avoid repeating deterministic fuzzing when resuming aborted
    scans. */
 
-static void mark_as_det_done(struct g* G, struct queue_entry* q) {
+void mark_as_det_done(struct g* G, struct queue_entry* q) {
 
   u8* fn = strrchr(q->fname, '/');
   s32 fd;
@@ -1142,18 +1118,11 @@ static void read_testcases(struct g* G) {
 
 /* Helper function for load_extras. */
 
-static int compare_extras_len(const void* p1, const void* p2) {
+int compare_extras_len(const void* p1, const void* p2) {
   struct extra_data *e1 = (struct extra_data*)p1,
                     *e2 = (struct extra_data*)p2;
 
   return e1->len - e2->len;
-}
-
-static int compare_extras_use_d(const void* p1, const void* p2) {
-  struct extra_data *e1 = (struct extra_data*)p1,
-                    *e2 = (struct extra_data*)p2;
-
-  return e2->hit_cnt - e1->hit_cnt;
 }
 
 
@@ -1396,120 +1365,8 @@ check_and_sort:
 
 
 
-/* Helper function for maybe_add_auto() */
-
-static inline u8 memcmp_nocase(u8* m1, u8* m2, u32 len) {
-
-  while (len--) if (tolower(*(m1++)) ^ tolower(*(m2++))) return 1;
-  return 0;
-
-}
-
 
 /* Maybe add automatic extra. */
-
-static void maybe_add_auto(struct g* G, u8* mem, u32 len) {
-
-  u32 i;
-
-  /* Allow users to specify that they don't want auto dictionaries. */
-
-  if (!MAX_AUTO_EXTRAS || !USE_AUTO_EXTRAS) return;
-
-  /* Skip runs of identical bytes. */
-
-  for (i = 1; i < len; i++)
-    if (mem[0] ^ mem[i]) break;
-
-  if (i == len) return;
-
-  /* Reject builtin interesting values. */
-
-  if (len == 2) {
-
-    i = sizeof(interesting_16) >> 1;
-
-    while (i--) 
-      if (*((u16*)mem) == interesting_16[i] ||
-          *((u16*)mem) == SWAP16(interesting_16[i])) return;
-
-  }
-
-  if (len == 4) {
-
-    i = sizeof(interesting_32) >> 2;
-
-    while (i--) 
-      if (*((u32*)mem) == interesting_32[i] ||
-          *((u32*)mem) == SWAP32(interesting_32[i])) return;
-
-  }
-
-  /* Reject anything that matches existing G->extras. Do a case-insensitive
-     match. We optimize by exploiting the fact that G->extras[] are sorted
-     by size. */
-
-  for (i = 0; i < G->extras_cnt; i++)
-    if (G->extras[i].len >= len) break;
-
-  for (; i < G->extras_cnt && G->extras[i].len == len; i++)
-    if (!memcmp_nocase(G->extras[i].data, mem, len)) return;
-
-  /* Last but not least, check G->a_extras[] for matches. There are no
-     guarantees of a particular sort order. */
-
-  G->auto_changed = 1;
-
-  for (i = 0; i < G->a_extras_cnt; i++) {
-
-    if (G->a_extras[i].len == len && !memcmp_nocase(G->a_extras[i].data, mem, len)) {
-
-      G->a_extras[i].hit_cnt++;
-      goto sort_a_extras;
-
-    }
-
-  }
-
-  /* At this point, looks like we're dealing with a new entry. So, let's
-     append it if we have room. Otherwise, let's randomly evict some other
-     entry from the bottom half of the list. */
-
-  if (G->a_extras_cnt < MAX_AUTO_EXTRAS) {
-
-    G->a_extras = ck_realloc_block(G->a_extras, (G->a_extras_cnt + 1) *
-                                sizeof(struct extra_data));
-
-    G->a_extras[G->a_extras_cnt].data = ck_memdup(mem, len);
-    G->a_extras[G->a_extras_cnt].len  = len;
-    G->a_extras_cnt++;
-
-  } else {
-
-    i = MAX_AUTO_EXTRAS / 2 +
-        UR(G, (MAX_AUTO_EXTRAS + 1) / 2);
-
-    ck_free(G->a_extras[i].data);
-
-    G->a_extras[i].data    = ck_memdup(mem, len);
-    G->a_extras[i].len     = len;
-    G->a_extras[i].hit_cnt = 0;
-
-  }
-
-sort_a_extras:
-
-  /* First, sort all auto G->extras by use count, descending order. */
-
-  qsort(G->a_extras, G->a_extras_cnt, sizeof(struct extra_data),
-        compare_extras_use_d);
-
-  /* Then, sort the top USE_AUTO_EXTRAS entries by size. */
-
-  qsort(G->a_extras, MIN(USE_AUTO_EXTRAS, G->a_extras_cnt),
-        sizeof(struct extra_data), compare_extras_len);
-
-}
 
 
 /* Save automatically generated G->extras. */
@@ -2156,8 +2013,8 @@ static void show_stats(struct g* G);
    to warn about flaky or otherwise problematic test cases early on; and when
    new paths are discovered to detect variable behavior and so on. */
 
-static u8 calibrate_case(struct g* G, char** argv, struct queue_entry* q,
-                         u8* use_mem, u32 handicap, u8 from_queue) {
+u8 calibrate_case(struct g* G, char** argv, struct queue_entry* q,
+                  u8* use_mem, u32 handicap, u8 from_queue) {
 
   u8  fault = 0, new_bits = 0, var_detected = 0, first_run = (q->exec_cksum == 0);
   u64 start_us, stop_us;
@@ -3977,7 +3834,7 @@ static u32 next_p2(u32 val) {
    trimmer uses power-of-two increments somewhere between 1/16 and 1/1024 of
    file size, to keep the stage short and sweet. */
 
-static u8 trim_case(struct g* G, char** argv, struct queue_entry* q, u8* in_buf) {
+u8 trim_case(struct g* G, char** argv, struct queue_entry* q, u8* in_buf) {
 
   static u8 tmp[64];
   static u8 clean_trace[MAP_SIZE];
@@ -4103,7 +3960,7 @@ abort_trimming:
    error conditions, returning 1 if it's time to bail out. This is
    a helper function for fuzz_one(). */
 
-static u8 common_fuzz_stuff(struct g* G, char** argv, u8* out_buf, u32 len) {
+u8 common_fuzz_stuff(struct g* G, char** argv, u8* out_buf, u32 len) {
 
   u8 fault;
 
@@ -4155,7 +4012,7 @@ static u8 common_fuzz_stuff(struct g* G, char** argv, u8* out_buf, u32 len) {
 /* Helper to choose random block len for block operations in fuzz_one().
    Doesn't return zero, provided that max_len is > 0. */
 
-static u32 choose_block_len(struct g* G, u32 limit) {
+u32 choose_block_len(struct g* G, u32 limit) {
 
   u32 min_value, max_value;
   u32 rlim = MIN(G->queue_cycle, 3);
@@ -4189,7 +4046,7 @@ static u32 choose_block_len(struct g* G, u32 limit) {
    A helper function for fuzz_one(). Maybe some of these constants should
    go into config.h. */
 
-static u32 calculate_score(struct g* G, struct queue_entry* q) {
+u32 calculate_score(struct g* G, struct queue_entry* q) {
 
   u32 avg_exec_us = G->total_cal_us / G->total_cal_cycles;
   u32 avg_bitmap_size = G->total_bitmap_size / G->total_bitmap_entries;
@@ -4263,7 +4120,7 @@ static u32 calculate_score(struct g* G, struct queue_entry* q) {
    return 1 if xor_val is zero, which implies that the old and attempted new
    values are identical and the exec would be a waste of time. */
 
-static u8 could_be_bitflip(u32 xor_val) {
+u8 could_be_bitflip(u32 xor_val) {
 
   u32 sh = 0;
 
@@ -4293,7 +4150,7 @@ static u8 could_be_bitflip(u32 xor_val) {
 /* Helper function to see if a particular value is reachable through
    arithmetic operations. Used for similar purposes. */
 
-static u8 could_be_arith(u32 old_val, u32 new_val, u8 blen) {
+u8 could_be_arith(u32 old_val, u32 new_val, u8 blen) {
 
   u32 i, ov = 0, nv = 0, diffs = 0;
 
@@ -4367,79 +4224,6 @@ static u8 could_be_arith(u32 old_val, u32 new_val, u8 blen) {
 
 }
 
-
-/* Last but not least, a similar helper to see if insertion of an 
-   interesting integer is redundant given the insertions done for
-   shorter blen. The last param (check_le) is set if the caller
-   already executed LE insertion for current blen and wants to see
-   if BE variant passed in new_val is unique. */
-
-static u8 could_be_interest(u32 old_val, u32 new_val, u8 blen, u8 check_le) {
-
-  u32 i, j;
-
-  if (old_val == new_val) return 1;
-
-  /* See if one-byte insertions from interesting_8 over old_val could
-     produce new_val. */
-
-  for (i = 0; i < blen; i++) {
-
-    for (j = 0; j < sizeof(interesting_8); j++) {
-
-      u32 tval = (old_val & ~(0xff << (i * 8))) |
-                 (((u8)interesting_8[j]) << (i * 8));
-
-      if (new_val == tval) return 1;
-
-    }
-
-  }
-
-  /* Bail out unless we're also asked to examine two-byte LE insertions
-     as a preparation for BE attempts. */
-
-  if (blen == 2 && !check_le) return 0;
-
-  /* See if two-byte insertions over old_val could give us new_val. */
-
-  for (i = 0; i < blen - 1; i++) {
-
-    for (j = 0; j < sizeof(interesting_16) / 2; j++) {
-
-      u32 tval = (old_val & ~(0xffff << (i * 8))) |
-                 (((u16)interesting_16[j]) << (i * 8));
-
-      if (new_val == tval) return 1;
-
-      /* Continue here only if blen > 2. */
-
-      if (blen > 2) {
-
-        tval = (old_val & ~(0xffff << (i * 8))) |
-               (SWAP16(interesting_16[j]) << (i * 8));
-
-        if (new_val == tval) return 1;
-
-      }
-
-    }
-
-  }
-
-  if (blen == 4 && check_le) {
-
-    /* See if four-byte insertions could produce the same result
-       (LE only). */
-
-    for (j = 0; j < sizeof(interesting_32) / 4; j++)
-      if (new_val == (u32)interesting_32[j]) return 1;
-
-  }
-
-  return 0;
-
-}
 
 
 /* Grab interesting test cases from other fuzzers. */

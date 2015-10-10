@@ -1,4 +1,216 @@
-#include "afl-fuzz.h"
+#include "fuzzing-engine.h"
+#include "enums.h"
+#include "config.h"
+#include "hash.h"
+#include "debug.h"
+#include "alloc-inl.h"
+#include "util.h"
+
+#include <string.h>
+#include <unistd.h>
+#include <sys/mman.h>
+#include <sys/types.h>
+#include <sys/stat.h>
+#include <fcntl.h>
+#include <ctype.h>
+
+static s8  interesting_8[]  = { INTERESTING_8 };
+static s16 interesting_16[] = { INTERESTING_8, INTERESTING_16 };
+static s32 interesting_32[] = { INTERESTING_8, INTERESTING_16, INTERESTING_32 };
+
+/* Last but not least, a similar helper to see if insertion of an 
+   interesting integer is redundant given the insertions done for
+   shorter blen. The last param (check_le) is set if the caller
+   already executed LE insertion for current blen and wants to see
+   if BE variant passed in new_val is unique. */
+
+static u8 could_be_interest(u32 old_val, u32 new_val, u8 blen, u8 check_le) {
+
+  u32 i, j;
+
+  if (old_val == new_val) return 1;
+
+  /* See if one-byte insertions from interesting_8 over old_val could
+     produce new_val. */
+
+  for (i = 0; i < blen; i++) {
+
+    for (j = 0; j < sizeof(interesting_8); j++) {
+
+      u32 tval = (old_val & ~(0xff << (i * 8))) |
+                 (((u8)interesting_8[j]) << (i * 8));
+
+      if (new_val == tval) return 1;
+
+    }
+
+  }
+
+  /* Bail out unless we're also asked to examine two-byte LE insertions
+     as a preparation for BE attempts. */
+
+  if (blen == 2 && !check_le) return 0;
+
+  /* See if two-byte insertions over old_val could give us new_val. */
+
+  for (i = 0; i < blen - 1; i++) {
+
+    for (j = 0; j < sizeof(interesting_16) / 2; j++) {
+
+      u32 tval = (old_val & ~(0xffff << (i * 8))) |
+                 (((u16)interesting_16[j]) << (i * 8));
+
+      if (new_val == tval) return 1;
+
+      /* Continue here only if blen > 2. */
+
+      if (blen > 2) {
+
+        tval = (old_val & ~(0xffff << (i * 8))) |
+               (SWAP16(interesting_16[j]) << (i * 8));
+
+        if (new_val == tval) return 1;
+
+      }
+
+    }
+
+  }
+
+  if (blen == 4 && check_le) {
+
+    /* See if four-byte insertions could produce the same result
+       (LE only). */
+
+    for (j = 0; j < sizeof(interesting_32) / 4; j++)
+      if (new_val == (u32)interesting_32[j]) return 1;
+
+  }
+
+  return 0;
+
+}
+
+
+
+static int compare_extras_use_d(const void* p1, const void* p2) {
+  struct extra_data *e1 = (struct extra_data*)p1,
+                    *e2 = (struct extra_data*)p2;
+
+  return e2->hit_cnt - e1->hit_cnt;
+}
+
+/* Helper function for maybe_add_auto() */
+
+inline u8 memcmp_nocase(u8* m1, u8* m2, u32 len) {
+
+  while (len--) if (tolower(*(m1++)) ^ tolower(*(m2++))) return 1;
+  return 0;
+
+}
+
+void maybe_add_auto(struct g* G, u8* mem, u32 len) {
+
+  u32 i;
+
+  /* Allow users to specify that they don't want auto dictionaries. */
+
+  if (!MAX_AUTO_EXTRAS || !USE_AUTO_EXTRAS) return;
+
+  /* Skip runs of identical bytes. */
+
+  for (i = 1; i < len; i++)
+    if (mem[0] ^ mem[i]) break;
+
+  if (i == len) return;
+
+  /* Reject builtin interesting values. */
+
+  if (len == 2) {
+
+    i = sizeof(interesting_16) >> 1;
+
+    while (i--) 
+      if (*((u16*)mem) == interesting_16[i] ||
+          *((u16*)mem) == SWAP16(interesting_16[i])) return;
+
+  }
+
+  if (len == 4) {
+
+    i = sizeof(interesting_32) >> 2;
+
+    while (i--) 
+      if (*((u32*)mem) == interesting_32[i] ||
+          *((u32*)mem) == SWAP32(interesting_32[i])) return;
+
+  }
+
+  /* Reject anything that matches existing G->extras. Do a case-insensitive
+     match. We optimize by exploiting the fact that G->extras[] are sorted
+     by size. */
+
+  for (i = 0; i < G->extras_cnt; i++)
+    if (G->extras[i].len >= len) break;
+
+  for (; i < G->extras_cnt && G->extras[i].len == len; i++)
+    if (!memcmp_nocase(G->extras[i].data, mem, len)) return;
+
+  /* Last but not least, check G->a_extras[] for matches. There are no
+     guarantees of a particular sort order. */
+
+  G->auto_changed = 1;
+
+  for (i = 0; i < G->a_extras_cnt; i++) {
+
+    if (G->a_extras[i].len == len && !memcmp_nocase(G->a_extras[i].data, mem, len)) {
+
+      G->a_extras[i].hit_cnt++;
+      goto sort_a_extras;
+
+    }
+
+  }
+
+  /* At this point, looks like we're dealing with a new entry. So, let's
+     append it if we have room. Otherwise, let's randomly evict some other
+     entry from the bottom half of the list. */
+
+  if (G->a_extras_cnt < MAX_AUTO_EXTRAS) {
+
+    G->a_extras = ck_realloc_block(G->a_extras, (G->a_extras_cnt + 1) *
+                                sizeof(struct extra_data));
+
+    G->a_extras[G->a_extras_cnt].data = ck_memdup(mem, len);
+    G->a_extras[G->a_extras_cnt].len  = len;
+    G->a_extras_cnt++;
+
+  } else {
+
+    i = MAX_AUTO_EXTRAS / 2 +
+        UR(G, (MAX_AUTO_EXTRAS + 1) / 2);
+
+    ck_free(G->a_extras[i].data);
+
+    G->a_extras[i].data    = ck_memdup(mem, len);
+    G->a_extras[i].len     = len;
+    G->a_extras[i].hit_cnt = 0;
+
+  }
+
+sort_a_extras:
+
+  /* First, sort all auto G->extras by use count, descending order. */
+
+  qsort(G->a_extras, G->a_extras_cnt, sizeof(struct extra_data),
+        compare_extras_use_d);
+
+  /* Then, sort the top USE_AUTO_EXTRAS entries by size. */
+
+  qsort(G->a_extras, MIN(USE_AUTO_EXTRAS, G->a_extras_cnt),
+        sizeof(struct extra_data), compare_extras_len);
+
+}
 
 /* Take the current entry from the queue, fuzz it for a while. This
    function is a tad too long... returns 0 if fuzzed successfully, 1 if

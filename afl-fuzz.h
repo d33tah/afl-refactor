@@ -190,10 +190,6 @@ struct g {
   
 };
 
-s8  interesting_8[]  = { INTERESTING_8 };
-s16 interesting_16[] = { INTERESTING_8, INTERESTING_16 };
-s32 interesting_32[] = { INTERESTING_8, INTERESTING_16, INTERESTING_32 };
-
 void locate_diffs(u8* ptr1, u8* ptr2, u32 len, s32* first, s32* last);
 u8 trim_case(struct g* G, char** argv, struct queue_entry* q, u8* in_buf);
 u8 common_fuzz_stuff(struct g* G, char** argv, u8* out_buf, u32 len);
@@ -201,6 +197,9 @@ u32 choose_block_len(struct g* G, u32 limit);
 u32 calculate_score(struct g* G, struct queue_entry* q);
 u8 could_be_bitflip(u32 xor_val);
 u8 could_be_arith(u32 old_val, u32 new_val, u8 blen);
-u8 could_be_interest(u32 old_val, u32 new_val, u8 blen, u8 check_le);
+u8 calibrate_case(struct g* G, char** argv, struct queue_entry* q,
+                  u8* use_mem, u32 handicap, u8 from_queue);
+void mark_as_det_done(struct g* G, struct queue_entry* q);
+int compare_extras_len(const void* p1, const void* p2);
 
 #endif

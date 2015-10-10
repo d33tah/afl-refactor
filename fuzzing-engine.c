@@ -171,7 +171,7 @@ u8 trim_case(struct g* G, char** argv, struct queue_entry* q, u8* in_buf) {
     close(fd);
 
     memcpy(G->trace_bits, clean_trace, MAP_SIZE);
-    update_bitmap_score(G, q);
+    update_bitmap_score(G->trace_bits, q, G->top_rated, &G->score_changed);
 
   }
 

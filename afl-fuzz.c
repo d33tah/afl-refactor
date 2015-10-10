@@ -523,7 +523,7 @@ static void simplify_trace(u32* mem) {
    count information here. This is called only sporadically, for some
    new paths. */
 
-static void minimize_bits(u8* dst, u8* src) {
+static void minimize_bits(u8* dst, const u8* src) {
 
   u32 i = 0;
 
@@ -547,7 +547,9 @@ static void minimize_bits(u8* dst, u8* src) {
    for every byte in the bitmap. We win that slot if there is no previous
    contender, or if the contender has a more favorable speed x size factor. */
 
-void update_bitmap_score(struct g* G, struct queue_entry* q) {
+void update_bitmap_score(const u8 *trace_bits, struct queue_entry* q,
+                         struct queue_entry* top_rated[MAP_SIZE],
+                         u8 *score_changed) {
 
   u32 i;
   u64 fav_factor = q->exec_us * q->len;
@@ -557,35 +559,35 @@ void update_bitmap_score(struct g* G, struct queue_entry* q) {
 
   for (i = 0; i < MAP_SIZE; i++)
 
-    if (G->trace_bits[i]) {
+    if (trace_bits[i]) {
 
-       if (G->top_rated[i]) {
+       if (top_rated[i]) {
 
          /* Faster-executing or smaller test cases are favored. */
 
-         if (fav_factor > G->top_rated[i]->exec_us * G->top_rated[i]->len) continue;
+         if (fav_factor > top_rated[i]->exec_us * top_rated[i]->len) continue;
 
          /* Looks like we're going to win. Decrease ref count for the
             previous winner, discard its G->trace_bits[] if necessary. */
 
-         if (!--G->top_rated[i]->tc_ref) {
-           ck_free(G->top_rated[i]->trace_mini);
-           G->top_rated[i]->trace_mini = 0;
+         if (!--top_rated[i]->tc_ref) {
+           ck_free(top_rated[i]->trace_mini);
+           top_rated[i]->trace_mini = 0;
          }
 
        }
 
        /* Insert ourselves as the new winner. */
 
-       G->top_rated[i] = q;
+       top_rated[i] = q;
        q->tc_ref++;
 
        if (!q->trace_mini) {
          q->trace_mini = ck_alloc(MAP_SIZE >> 3);
-         minimize_bits(q->trace_mini, G->trace_bits);
+         minimize_bits(q->trace_mini, trace_bits);
        }
 
-       G->score_changed = 1;
+       *score_changed = 1;
 
      }
 
@@ -1523,7 +1525,7 @@ u8 calibrate_case(struct g* G, char** argv, struct queue_entry* q,
   G->total_bitmap_size += q->bitmap_size;
   G->total_bitmap_entries++;
 
-  update_bitmap_score(G, q);
+  update_bitmap_score(G->trace_bits, q, G->top_rated, &G->score_changed);
 
   /* If this case didn't result in new output from the instrumentation, tell
      parent. This is a non-critical problem, but something to warn the user

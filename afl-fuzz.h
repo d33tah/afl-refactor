@@ -196,9 +196,8 @@ void show_stats(const struct g* G, u8 *term_too_small,
                 u8 *auto_changed, volatile u8 *stop_soon,
                 u32 *stats_update_freq, u8 *run_over10m);
 u8 save_if_interesting(struct g* G, char** argv, void* mem, u32 len, u8 fault);
-void mark_as_det_done(struct g* G, struct queue_entry* q);
+void mark_as_det_done(const struct g* G, struct queue_entry* q);
 void mark_as_variable(const struct g* G, struct queue_entry* q);
 int compare_extras_len(const void* p1, const void* p2);
-void init_forkserver(struct g* G, char** argv);
 
 #endif

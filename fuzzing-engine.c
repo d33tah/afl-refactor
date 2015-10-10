@@ -141,7 +141,11 @@ u8 trim_case(struct g* G, char** argv, struct queue_entry* q, u8* in_buf) {
 
       /* Since this can be slow, update the screen every now and then. */
 
-      if (!(trim_exec++ % G->stats_update_freq)) show_stats(G);
+      if (!(trim_exec++ % G->stats_update_freq))
+          show_stats(G, &G->term_too_small, &G->clear_screen,
+                     &G->bitmap_changed, &G->auto_changed, &G->stop_soon,
+                     &G->stats_update_freq, &G->run_over10m);
+
       G->stage_cur++;
 
     }
@@ -261,7 +265,9 @@ static u8 common_fuzz_stuff(struct g* G, char** argv, u8* out_buf, u32 len) {
   G->queued_discovered += save_if_interesting(G, argv, out_buf, len, fault);
 
   if (!(G->stage_cur % G->stats_update_freq) || G->stage_cur + 1 == G->stage_max)
-    show_stats(G);
+    show_stats(G, &G->term_too_small, &G->clear_screen,
+               &G->bitmap_changed, &G->auto_changed, &G->stop_soon,
+               &G->stats_update_freq, &G->run_over10m);
 
   return 0;
 

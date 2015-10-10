@@ -224,13 +224,13 @@ static void destroy_queue(struct g* G) {
    -B option, to focus a separate fuzzing session on a particular
    interesting input without rediscovering all the others. */
 
-static void write_bitmap(struct g* G) {
+static void write_bitmap(const struct g* G, u8 *bitmap_changed) {
 
   u8* fname;
   s32 fd;
 
-  if (!G->bitmap_changed) return;
-  G->bitmap_changed = 0;
+  if (!*bitmap_changed) return;
+  *bitmap_changed = 0;
 
   fname = alloc_printf("%s/fuzz_bitmap", G->out_dir);
   fd = open(fname, O_WRONLY | O_CREAT | O_TRUNC, 0600);
@@ -358,7 +358,7 @@ static inline u8 has_new_bits(struct g* G, u8* virgin_map) {
 /* Count the number of bits set in the provided bitmap. Used for the status
    screen several times every second, does not have to be fast. */
 
-static u32 count_bits(u8* mem) {
+static u32 count_bits(const u8* mem) {
 
   u32* ptr = (u32*)mem;
   u32  i   = (MAP_SIZE >> 2);
@@ -417,7 +417,7 @@ static u32 count_bytes(u8* mem) {
 /* Count the number of non-255 bytes set in the bitmap. Used strictly for the
    status screen, several calls per second or so. */
 
-static u32 count_non_255_bytes(u8* mem) {
+static u32 count_non_255_bytes(const u8* mem) {
 
   u32* ptr = (u32*)mem;
   u32  i   = (MAP_SIZE >> 2);
@@ -1023,20 +1023,14 @@ check_and_sort:
 }
 
 
-
-
-
-/* Maybe add automatic extra. */
-
-
 /* Save automatically generated G->extras. */
 
-static void save_auto(struct g* G) {
+static void save_auto(const struct g* G, u8 *auto_changed) {
 
   u32 i;
 
-  if (!G->auto_changed) return;
-  G->auto_changed = 0;
+  if (*auto_changed) return;
+  *auto_changed = 0;
 
   for (i = 0; i < MIN(USE_AUTO_EXTRAS, G->a_extras_cnt); i++) {
 
@@ -1474,7 +1468,10 @@ u8 calibrate_case(struct g* G, char** argv, struct queue_entry* q,
 
     u32 cksum;
 
-    if (!first_run && !(G->stage_cur % G->stats_update_freq)) show_stats(G);
+    if (!first_run && !(G->stage_cur % G->stats_update_freq))
+      show_stats(G, &G->term_too_small, &G->clear_screen, &G->bitmap_changed,
+                 &G->auto_changed, &G->stop_soon, &G->stats_update_freq,
+                 &G->run_over10m);
 
     write_to_testcase(G, use_mem, q->len);
 
@@ -1553,7 +1550,10 @@ abort_calibration:
   G->stage_max  = old_sm;
   G->exec_tmout = old_tmout;
 
-  if (!first_run) show_stats(G);
+  if (!first_run)
+    show_stats(G, &G->term_too_small, &G->clear_screen, &G->bitmap_changed,
+               &G->auto_changed, &G->stop_soon, &G->stats_update_freq,
+               &G->run_over10m);
 
   return fault;
 
@@ -2232,7 +2232,7 @@ static void find_timeout(struct g* G) {
 
 /* Update stats file for unattended monitoring. */
 
-static void write_stats_file(struct g* G, double bitmap_cvg, double eps) {
+static void write_stats_file(const struct g* G, double bitmap_cvg, double eps) {
 
   static double last_bcvg, last_eps;
 
@@ -2302,7 +2302,7 @@ static void write_stats_file(struct g* G, double bitmap_cvg, double eps) {
 
 /* Update the plot file if there is a reason to. */
 
-static void maybe_update_plot_file(struct g* G, double bitmap_cvg, double eps) {
+static void maybe_update_plot_file(const struct g* G, double bitmap_cvg, double eps) {
 
   static u32 prev_qp, prev_pf, prev_pnf, prev_ce, prev_md;
   static u64 prev_qc, prev_uc, prev_uh;
@@ -2705,13 +2705,16 @@ dir_cleanup_failed:
 }
 
 
-static void check_term_size(struct g* G);
+static void check_term_size(u8 *term_too_small);
 
 
 /* A spiffy retro stats screen! This is called every G->stats_update_freq
    execve() calls, plus in several other circumstances. */
 
-void show_stats(struct g* G) {
+void show_stats(const struct g* G, u8 *term_too_small,
+                volatile u8 *clear_screen, u8 *bitmap_changed,
+                u8 *auto_changed, volatile u8 *stop_soon,
+                u32 *stats_update_freq, u8 *run_over10m) {
 
   static u64 last_stats_ms, last_plot_ms, last_ms, last_execs;
   static double avg_exec;
@@ -2731,7 +2734,7 @@ void show_stats(struct g* G) {
 
   /* Check if we're past the 10 minute mark. */
 
-  if (cur_ms - G->start_time > 10 * 60 * 1000) G->run_over10m = 1;
+  if (cur_ms - G->start_time > 10 * 60 * 1000) *run_over10m = 1;
 
   /* Calculate smoothed exec speed stats. */
 
@@ -2760,8 +2763,8 @@ void show_stats(struct g* G) {
 
   /* Tell the callers when to contact us (as measured in execs). */
 
-  G->stats_update_freq = avg_exec / (UI_TARGET_HZ * 10);
-  if (!G->stats_update_freq) G->stats_update_freq = 1;
+  *stats_update_freq = avg_exec / (UI_TARGET_HZ * 10);
+  if (!*stats_update_freq) *stats_update_freq = 1;
 
   /* Do some bitmap stats. */
 
@@ -2774,8 +2777,8 @@ void show_stats(struct g* G) {
 
     last_stats_ms = cur_ms;
     write_stats_file(G, t_byte_ratio, avg_exec);
-    save_auto(G);
-    write_bitmap(G);
+    save_auto(G, auto_changed);
+    write_bitmap(G, bitmap_changed);
 
   }
 
@@ -2791,7 +2794,7 @@ void show_stats(struct g* G) {
   /* Honor AFL_EXIT_WHEN_DONE. */
 
   if (!G->dumb_mode && G->cycles_wo_finds > 20 && !G->pending_not_fuzzed &&
-      getenv("AFL_EXIT_WHEN_DONE")) G->stop_soon = 1;
+      getenv("AFL_EXIT_WHEN_DONE")) *stop_soon = 1;
 
   /* If we're not on TTY, bail out. */
 
@@ -2806,9 +2809,9 @@ void show_stats(struct g* G) {
   if (G->clear_screen) {
 
     SAYF(TERM_CLEAR CURSOR_HIDE);
-    G->clear_screen = 0;
+    *clear_screen = 0;
 
-    check_term_size(G);
+    check_term_size(term_too_small);
 
   }
 
@@ -3433,7 +3436,10 @@ static void sync_fuzzers(struct g* G, char** argv) {
 
         munmap(mem, st.st_size);
 
-        if (!(G->stage_cur++ % G->stats_update_freq)) show_stats(G);
+        if (!(G->stage_cur++ % G->stats_update_freq))
+          show_stats(G, &G->term_too_small, &G->clear_screen,
+                     &G->bitmap_changed, &G->auto_changed, &G->stop_soon,
+                     &G->stats_update_freq, &G->run_over10m);
 
       }
 
@@ -3689,15 +3695,15 @@ static void check_if_tty(struct g* G) {
 
 /* Check terminal dimensions after resize. */
 
-static void check_term_size(struct g* G) {
+static void check_term_size(u8 *term_too_small) {
 
   struct winsize ws;
 
-  G->term_too_small = 0;
+  *term_too_small = 0;
 
   if (ioctl(1, TIOCGWINSZ, &ws)) return;
 
-  if (ws.ws_row < 25 || ws.ws_col < 80) G->term_too_small = 1;
+  if (ws.ws_row < 25 || ws.ws_col < 80) *term_too_small = 1;
 
 }
 
@@ -4584,7 +4590,7 @@ int main(int argc, char** argv) {
   seek_to = find_start_position(G);
 
   write_stats_file(G, 0, 0);
-  save_auto(G);
+  save_auto(G, &G->auto_changed);
 
   if (G->stop_soon) goto stop_fuzzing;
 
@@ -4615,7 +4621,9 @@ int main(int argc, char** argv) {
         G->queue_cur = G->queue_cur->next;
       }
 
-      show_stats(G);
+      show_stats(G, &G->term_too_small, &G->clear_screen, &G->bitmap_changed,
+                 &G->auto_changed, &G->stop_soon, &G->stats_update_freq,
+                 &G->run_over10m);
 
       if (G->not_on_tty) {
         ACTF("Entering queue cycle %llu.", G->queue_cycle);
@@ -4654,11 +4662,16 @@ int main(int argc, char** argv) {
 
   }
 
-  if (G->queue_cur) show_stats(G);
+  if (G->queue_cur)
+    show_stats(G, &G->term_too_small, &G->clear_screen, &G->bitmap_changed,
+               &G->auto_changed, &G->stop_soon, &G->stats_update_freq,
+               &G->run_over10m);
 
-  write_bitmap(G);
+
+
+  write_bitmap(G, &G->bitmap_changed);
   write_stats_file(G, 0, 0);
-  save_auto(G);
+  save_auto(G, &G->auto_changed);
 
 stop_fuzzing:
 

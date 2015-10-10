@@ -192,7 +192,10 @@ struct g {
 
 void update_bitmap_score(struct g* G, struct queue_entry* q);
 void write_to_testcase(struct g* G, void* mem, u32 len);
-void show_stats(struct g* G);
+void show_stats(const struct g* G, u8 *term_too_small,
+                volatile u8 *clear_screen, u8 *bitmap_changed,
+                u8 *auto_changed, volatile u8 *stop_soon,
+                u32 *stats_update_freq, u8 *run_over10m);
 u8 save_if_interesting(struct g* G, char** argv, void* mem, u32 len, u8 fault);
 u32 calculate_score(struct g* G, struct queue_entry* q);
 u8 calibrate_case(struct g* G, char** argv, struct queue_entry* q,

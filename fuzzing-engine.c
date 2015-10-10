@@ -585,6 +585,7 @@ inline u8 memcmp_nocase(u8* m1, u8* m2, u32 len) {
 
 }
 
+/* Maybe add automatic extra. */
 void maybe_add_auto(struct g* G, u8* mem, u32 len) {
 
   u32 i;

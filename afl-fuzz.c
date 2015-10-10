@@ -1737,7 +1737,9 @@ u8 calibrate_case(struct g* G, char** argv, struct queue_entry* q,
 
     write_to_testcase(G, use_mem, q->len);
 
-    fault = run_target(G, argv);
+    fault = run_target(G, argv, &G->kill_signal, &G->total_execs,
+                       &G->stop_soon, &G->child_timed_out, &G->child_pid,
+                       G->trace_bits);
 
     /* G->stop_soon is set by the handler for Ctrl+C. When it's pressed,
        we want to bail out quickly. */
@@ -3564,7 +3566,9 @@ u8 trim_case(struct g* G, char** argv, struct queue_entry* q, u8* in_buf) {
 
       write_with_gap(G, in_buf, q->len, remove_pos, trim_avail);
 
-      fault = run_target(G, argv);
+      fault = run_target(G, argv, &G->kill_signal, &G->total_execs,
+                         &G->stop_soon, &G->child_timed_out, &G->child_pid,
+                         G->trace_bits);
       G->trim_execs++;
 
       if (G->stop_soon || fault == FAULT_ERROR) goto abort_trimming;
@@ -3846,7 +3850,9 @@ static void sync_fuzzers(struct g* G, char** argv) {
 
         write_to_testcase(G, mem, st.st_size);
 
-        fault = run_target(G, argv);
+        fault = run_target(G, argv, &G->kill_signal, &G->total_execs,
+                           &G->stop_soon, &G->child_timed_out, &G->child_pid,
+                           G->trace_bits);
 
         if (G->stop_soon) return;
 

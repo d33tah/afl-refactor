@@ -90,7 +90,9 @@ static inline void classify_counts(u32* mem) {
 /* Execute target application, monitoring for timeouts. Return status
    information. The called program will update G->trace_bits[]. */
 
-u8 run_target(struct g* G, char** argv) {
+u8 run_target(const struct g* G, char** argv, u8 *kill_signal,
+              u64 *total_execs, volatile u8* stop_soon,
+              volatile u8* child_timed_out, s32 *child_pid, u8 *trace_bits) {
 
   static struct itimerval it;
   static u32 prev_timed_out = 0;
@@ -98,13 +100,13 @@ u8 run_target(struct g* G, char** argv) {
   int status = 0;
   u32 tb4;
 
-  G->child_timed_out = 0;
+  *child_timed_out = 0;
 
   /* After this memset, G->trace_bits[] are effectively volatile, so we
      must prevent any earlier operations from venturing into that
      territory. */
 
-  memset(G->trace_bits, 0, MAP_SIZE);
+  memset(trace_bits, 0, MAP_SIZE);
   MEM_BARRIER();
 
   /* If we're running in "dumb" mode, we can't rely on the fork server
@@ -114,11 +116,11 @@ u8 run_target(struct g* G, char** argv) {
 
   if (G->dumb_mode == 1 || G->no_forkserver) {
 
-    G->child_pid = fork();
+    *child_pid = fork();
 
-    if (G->child_pid < 0) PFATAL("fork() failed");
+    if (*child_pid < 0) PFATAL("fork() failed");
 
-    if (!G->child_pid) {
+    if (!*child_pid) {
 
       struct rlimit r;
 
@@ -182,7 +184,7 @@ u8 run_target(struct g* G, char** argv) {
       /* Use a distinctive bitmap value to tell the parent about execv()
          falling through. */
 
-      *(u32*)G->trace_bits = EXEC_FAIL_SIG;
+      *(u32*)trace_bits = EXEC_FAIL_SIG;
       exit(0);
 
     }
@@ -196,19 +198,19 @@ u8 run_target(struct g* G, char** argv) {
 
     if ((res = write(G->fsrv_ctl_fd, &prev_timed_out, 4)) != 4) {
 
-      if (G->stop_soon) return 0;
+      if (*stop_soon) return 0;
       RPFATAL(res, "Unable to request new process from fork server (OOM?)");
 
     }
 
-    if ((res = read(G->fsrv_st_fd, &G->child_pid, 4)) != 4) {
+    if ((res = read(G->fsrv_st_fd, child_pid, 4)) != 4) {
 
-      if (G->stop_soon) return 0;
+      if (*stop_soon) return 0;
       RPFATAL(res, "Unable to request new process from fork server (OOM?)");
 
     }
 
-    if (G->child_pid <= 0) FATAL("Fork server is misbehaving (OOM?)");
+    if (*child_pid <= 0) FATAL("Fork server is misbehaving (OOM?)");
 
   }
 
@@ -223,7 +225,7 @@ u8 run_target(struct g* G, char** argv) {
 
   if (G->dumb_mode == 1 || G->no_forkserver) {
 
-    if (waitpid(G->child_pid, &status, 0) <= 0) PFATAL("waitpid() failed");
+    if (waitpid(*child_pid, &status, 0) <= 0) PFATAL("waitpid() failed");
 
   } else {
 
@@ -231,20 +233,20 @@ u8 run_target(struct g* G, char** argv) {
 
     if ((res = read(G->fsrv_st_fd, &status, 4)) != 4) {
 
-      if (G->stop_soon) return 0;
+      if (*stop_soon) return 0;
       RPFATAL(res, "Unable to communicate with fork server");
 
     }
 
   }
 
-  G->child_pid = 0;
+  *child_pid = 0;
   it.it_value.tv_sec = 0;
   it.it_value.tv_usec = 0;
 
   setitimer(ITIMER_REAL, &it, NULL);
 
-  G->total_execs++;
+  (*total_execs)++;
 
   /* Any subsequent operations on G->trace_bits must not be moved by the
      compiler below this point. Past this location, G->trace_bits[] behave
@@ -252,22 +254,22 @@ u8 run_target(struct g* G, char** argv) {
 
   MEM_BARRIER();
 
-  tb4 = *(u32*)G->trace_bits;
+  tb4 = *(u32*)trace_bits;
 
 #ifdef __x86_64__
-  classify_counts((u64*)G->trace_bits);
+  classify_counts((u64*)trace_bits);
 #else
-  classify_counts((u32*)G->trace_bits);
+  classify_counts((u32*)trace_bits);
 #endif /* ^__x86_64__ */
 
-  prev_timed_out = G->child_timed_out;
+  prev_timed_out = *child_timed_out;
 
   /* Report outcome to caller. */
 
-  if (G->child_timed_out) return FAULT_HANG;
+  if (*child_timed_out) return FAULT_HANG;
 
-  if (WIFSIGNALED(status) && !G->stop_soon) {
-    G->kill_signal = WTERMSIG(status);
+  if (WIFSIGNALED(status) && !*stop_soon) {
+    *kill_signal = WTERMSIG(status);
     return FAULT_CRASH;
   }
 
@@ -275,7 +277,7 @@ u8 run_target(struct g* G, char** argv) {
      must use a special exit code. */
 
   if (G->uses_asan && WEXITSTATUS(status) == MSAN_ERROR) {
-    G->kill_signal = 0;
+    *kill_signal = 0;
     return FAULT_CRASH;
   }
 

@@ -5,6 +5,7 @@
 #include "debug.h"
 #include "alloc-inl.h"
 #include "util.h"
+#include "shm-instr.h"
 
 #include <string.h>
 #include <unistd.h>
@@ -35,7 +36,8 @@ static u8 common_fuzz_stuff(struct g* G, char** argv, u8* out_buf, u32 len) {
 
   write_to_testcase(G, out_buf, len);
 
-  fault = run_target(G, argv);
+  fault = run_target(G, argv, &G->kill_signal, &G->total_execs, &G->stop_soon,
+                     &G->child_timed_out, &G->child_pid, G->trace_bits);
 
   if (G->stop_soon) return 1;
 

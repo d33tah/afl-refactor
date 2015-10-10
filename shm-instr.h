@@ -3,6 +3,8 @@
 
 #include "afl-fuzz.h"
 
-u8 run_target(struct g* G, char** argv);
+u8 run_target(const struct g* G, char** argv, u8 *kill_signal,
+              u64 *total_execs, volatile u8* stop_soon,
+              volatile u8* child_timed_out, s32 *child_pid, u8 *trace_bits);
 
 #endif

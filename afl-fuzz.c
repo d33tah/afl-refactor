@@ -111,7 +111,7 @@ void mark_as_det_done(struct g* G, struct queue_entry* q) {
 /* Mark as variable. Create symlinks if possible to make it easier to examine
    the files. */
 
-static void mark_as_variable(struct g* G, struct queue_entry* q) {
+void mark_as_variable(const struct g* G, struct queue_entry* q) {
 
   u8 *fn = strrchr(q->fname, '/') + 1, *ldest;
 
@@ -790,7 +790,7 @@ static void destroy_extras(struct g* G) {
    cloning a stopped child. So, we just execute once, and then send commands
    through a pipe. The other part of this logic is in afl-as.h. */
 
-static void init_forkserver(struct g* G, char** argv) {
+void init_forkserver(struct g* G, char** argv) {
 
   static struct itimerval it;
   int st_pipe[2], ctl_pipe[2];
@@ -1095,137 +1095,6 @@ void write_to_testcase(struct g* G, void* mem, u32 len) {
     lseek(fd, 0, SEEK_SET);
 
   } else close(fd);
-
-}
-
-
-/* Calibrate a new test case. This is done when processing the input directory
-   to warn about flaky or otherwise problematic test cases early on; and when
-   new paths are discovered to detect variable behavior and so on. */
-
-u8 calibrate_case(struct g* G, char** argv, struct queue_entry* q,
-                  u8* use_mem, u32 handicap, u8 from_queue) {
-
-  u8  fault = 0, new_bits = 0, var_detected = 0, first_run = (q->exec_cksum == 0);
-  u64 start_us, stop_us;
-
-  s32 old_sc = G->stage_cur, old_sm = G->stage_max, old_tmout = G->exec_tmout;
-  u8* old_sn = G->stage_name;
-
-  /* Be a bit more generous about timeouts when resuming sessions, or when
-     trying to calibrate already-added finds. This helps avoid trouble due
-     to intermittent latency. */
-
-  if (!from_queue || G->resuming_fuzz)
-    G->exec_tmout = MAX(G->exec_tmout + CAL_TMOUT_ADD,
-                     G->exec_tmout * CAL_TMOUT_PERC / 100);
-
-  q->cal_failed++;
-
-  G->stage_name = "calibration";
-  G->stage_max  = G->no_var_check ? CAL_CYCLES_NO_VAR : CAL_CYCLES;
-
-  /* Make sure the forkserver is up before we do anything, and let's not
-     count its spin-up time toward binary calibration. */
-
-  if (G->dumb_mode != 1 && !G->no_forkserver && !G->forksrv_pid)
-    init_forkserver(G, argv);
-
-  start_us = get_cur_time_us();
-
-  for (G->stage_cur = 0; G->stage_cur < G->stage_max; G->stage_cur++) {
-
-    u32 cksum;
-
-    if (!first_run && !(G->stage_cur % G->stats_update_freq))
-      show_stats(G, &G->term_too_small, &G->clear_screen, &G->bitmap_changed,
-                 &G->auto_changed, &G->stop_soon, &G->stats_update_freq,
-                 &G->run_over10m);
-
-    write_to_testcase(G, use_mem, q->len);
-
-    fault = run_target(G, argv, &G->kill_signal, &G->total_execs,
-                       &G->stop_soon, &G->child_timed_out, &G->child_pid,
-                       G->trace_bits);
-
-    /* G->stop_soon is set by the handler for Ctrl+C. When it's pressed,
-       we want to bail out quickly. */
-
-    if (G->stop_soon || fault != G->crash_mode) goto abort_calibration;
-
-    if (!G->dumb_mode && !G->stage_cur && !count_bytes(G->trace_bits)) {
-      fault = FAULT_NOINST;
-      goto abort_calibration;
-    }
-
-    cksum = hash32(G->trace_bits, MAP_SIZE, HASH_CONST);
-
-    if (q->exec_cksum != cksum) {
-
-      u8 hnb = has_new_bits(G, G->virgin_bits, G->trace_bits,
-                            G->virgin_bits, &G->bitmap_changed);
-      if (hnb > new_bits) new_bits = hnb;
-
-      if (!G->no_var_check && q->exec_cksum) {
-
-        var_detected = 1;
-        G->stage_max    = CAL_CYCLES_LONG;
-
-      } else q->exec_cksum = cksum;
-
-    }
-
-  }
-
-  stop_us = get_cur_time_us();
-
-  G->total_cal_us     += stop_us - start_us;
-  G->total_cal_cycles += G->stage_max;
-
-  /* OK, let's collect some stats about the performance of this test case.
-     This is used for fuzzing air time calculations in calculate_score(). */
-
-  q->exec_us     = (stop_us - start_us) / G->stage_max;
-  q->bitmap_size = count_bytes(G->trace_bits);
-  q->handicap    = handicap;
-  q->cal_failed  = 0;
-
-  G->total_bitmap_size += q->bitmap_size;
-  G->total_bitmap_entries++;
-
-  update_bitmap_score(G->trace_bits, q, G->top_rated, &G->score_changed);
-
-  /* If this case didn't result in new output from the instrumentation, tell
-     parent. This is a non-critical problem, but something to warn the user
-     about. */
-
-  if (!G->dumb_mode && first_run && !fault && !new_bits) fault = FAULT_NOBITS;
-
-abort_calibration:
-
-  if (new_bits == 2 && !q->has_new_cov) {
-    q->has_new_cov = 1;
-    G->queued_with_cov++;
-  }
-
-  /* Mark variable paths. */
-
-  if (var_detected && !q->var_behavior) {
-    mark_as_variable(G, q);
-    G->queued_variable++;
-  }
-
-  G->stage_name = old_sn;
-  G->stage_cur  = old_sc;
-  G->stage_max  = old_sm;
-  G->exec_tmout = old_tmout;
-
-  if (!first_run)
-    show_stats(G, &G->term_too_small, &G->clear_screen, &G->bitmap_changed,
-               &G->auto_changed, &G->stop_soon, &G->stats_update_freq,
-               &G->run_over10m);
-
-  return fault;
 
 }
 

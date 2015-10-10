@@ -27,13 +27,13 @@ CFLAGS     += -Werror -Wall -D_FORTIFY_SOURCE=2 -g -Wno-pointer-sign \
 	      -DAFL_PATH=\"$(HELPER_PATH)\" -DDOC_PATH=\"$(DOC_PATH)\" \
 	      -DBIN_PATH=\"$(BIN_PATH)\" -DVERSION=\"$(VERSION)\"
 
-AFL_FUZZ_OBJS = afl-fuzz.o fuzzing-engine.o util.o
+AFL_FUZZ_OBJS = afl-fuzz.o fuzzing-engine.o shm-instr.o util.o
 
 ifneq "$(filter Linux GNU%,$(shell uname))" ""
   LDFLAGS  += -ldl
 endif
 
-COMM_HDR    = afl-fuzz.h alloc-inl.h config.h debug.h fuzzing-engine.h types.h util.h
+COMM_HDR    = afl-fuzz.h alloc-inl.h config.h debug.h fuzzing-engine.h shm-instr.h types.h util.h
 
 all: afl-fuzz
 

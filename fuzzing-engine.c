@@ -18,6 +18,61 @@ static s8  interesting_8[]  = { INTERESTING_8 };
 static s16 interesting_16[] = { INTERESTING_8, INTERESTING_16 };
 static s32 interesting_32[] = { INTERESTING_8, INTERESTING_16, INTERESTING_32 };
 
+/* Write a modified test case, run program, process results. Handle
+   error conditions, returning 1 if it's time to bail out. This is
+   a helper function for fuzz_one(). */
+
+static u8 common_fuzz_stuff(struct g* G, char** argv, u8* out_buf, u32 len) {
+
+  u8 fault;
+
+  if (G->post_handler) {
+
+    out_buf = G->post_handler(out_buf, &len);
+    if (!out_buf || !len) return 0;
+
+  }
+
+  write_to_testcase(G, out_buf, len);
+
+  fault = run_target(G, argv);
+
+  if (G->stop_soon) return 1;
+
+  if (fault == FAULT_HANG) {
+
+    if (G->subseq_hangs++ > HANG_LIMIT) {
+      G->cur_skipped_paths++;
+      return 1;
+    }
+
+  } else G->subseq_hangs = 0;
+
+  /* Users can hit us with SIGUSR1 to request the current input
+     to be abandoned. */
+
+  if (G->skip_requested) {
+
+     G->skip_requested = 0;
+     G->cur_skipped_paths++;
+     return 1;
+
+  }
+
+  /* This handles FAULT_ERROR for us: */
+
+  G->queued_discovered += save_if_interesting(G, argv, out_buf, len, fault);
+
+  if (!(G->stage_cur % G->stats_update_freq) || G->stage_cur + 1 == G->stage_max)
+    show_stats(G);
+
+  return 0;
+
+}
+
+
+
+
 #ifndef IGNORE_FINDS
 
 /* Helper function to compare buffers; returns first and last differing offset. We

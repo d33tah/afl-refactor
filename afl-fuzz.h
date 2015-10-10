@@ -191,7 +191,9 @@ struct g {
 };
 
 u8 trim_case(struct g* G, char** argv, struct queue_entry* q, u8* in_buf);
-u8 common_fuzz_stuff(struct g* G, char** argv, u8* out_buf, u32 len);
+void write_to_testcase(struct g* G, void* mem, u32 len);
+void show_stats(struct g* G);
+u8 save_if_interesting(struct g* G, char** argv, void* mem, u32 len, u8 fault);
 u32 choose_block_len(struct g* G, u32 limit);
 u32 calculate_score(struct g* G, struct queue_entry* q);
 u8 calibrate_case(struct g* G, char** argv, struct queue_entry* q,

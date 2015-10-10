@@ -34,6 +34,7 @@
 #include "enums.h"
 #include "afl-fuzz.h"
 #include "fuzzing-engine.h"
+#include "shm-instr.h"
 #include "util.h"
 
 #include <stdio.h>
@@ -630,13 +631,6 @@ static u32 count_non_255_bytes(u8* mem) {
    is hit or not. Called on every new crash or hang, should be
    reasonably fast. */
 
-#define AREP4(_sym)   (_sym), (_sym), (_sym), (_sym)
-#define AREP8(_sym)   AREP4(_sym), AREP4(_sym)
-#define AREP16(_sym)  AREP8(_sym), AREP8(_sym)
-#define AREP32(_sym)  AREP16(_sym), AREP16(_sym)
-#define AREP64(_sym)  AREP32(_sym), AREP32(_sym)
-#define AREP128(_sym) AREP64(_sym), AREP64(_sym)
-
 static u8 simplify_lookup[256] = { 
   /*    4 */ 1, 128, 128, 128,
   /*   +4 */ AREP4(128),
@@ -700,82 +694,6 @@ static void simplify_trace(u32* mem) {
     } else *mem = 0x01010101;
 
     mem++;
-  }
-
-}
-
-#endif /* ^__x86_64__ */
-
-
-/* Destructively classify execution counts in a trace. This is used as a
-   preprocessing step for any newly acquired traces. Called on every exec,
-   must be fast. */
-
-static u8 count_class_lookup[256] = {
-
-  /* 0 - 3:       4 */ 0, 1, 2, 4,
-  /* 4 - 7:      +4 */ AREP4(8),
-  /* 8 - 15:     +8 */ AREP8(16),
-  /* 16 - 31:   +16 */ AREP16(32),
-  /* 32 - 127:  +96 */ AREP64(64), AREP32(64),
-  /* 128+:     +128 */ AREP128(128)
-
-};
-
-#ifdef __x86_64__
-
-static inline void classify_counts(u64* mem) {
-
-  u32 i = MAP_SIZE >> 3;
-
-  while (i--) {
-
-    /* Optimize for sparse bitmaps. */
-
-    if (*mem) {
-
-      u8* mem8 = (u8*)mem;
-
-      mem8[0] = count_class_lookup[mem8[0]];
-      mem8[1] = count_class_lookup[mem8[1]];
-      mem8[2] = count_class_lookup[mem8[2]];
-      mem8[3] = count_class_lookup[mem8[3]];
-      mem8[4] = count_class_lookup[mem8[4]];
-      mem8[5] = count_class_lookup[mem8[5]];
-      mem8[6] = count_class_lookup[mem8[6]];
-      mem8[7] = count_class_lookup[mem8[7]];
-
-    }
-
-    mem++;
-
-  }
-
-}
-
-#else
-
-static inline void classify_counts(u32* mem) {
-
-  u32 i = MAP_SIZE >> 2;
-
-  while (i--) {
-
-    /* Optimize for sparse bitmaps. */
-
-    if (*mem) {
-
-      u8* mem8 = (u8*)mem;
-
-      mem8[0] = count_class_lookup[mem8[0]];
-      mem8[1] = count_class_lookup[mem8[1]];
-      mem8[2] = count_class_lookup[mem8[2]];
-      mem8[3] = count_class_lookup[mem8[3]];
-
-    }
-
-    mem++;
-
   }
 
 }
@@ -1714,211 +1632,12 @@ static void init_forkserver(struct g* G, char** argv) {
 }
 
 
-/* Execute target application, monitoring for timeouts. Return status
-   information. The called program will update G->trace_bits[]. */
-
-static u8 run_target(struct g* G, char** argv) {
-
-  static struct itimerval it;
-  static u32 prev_timed_out = 0;
-
-  int status = 0;
-  u32 tb4;
-
-  G->child_timed_out = 0;
-
-  /* After this memset, G->trace_bits[] are effectively volatile, so we
-     must prevent any earlier operations from venturing into that
-     territory. */
-
-  memset(G->trace_bits, 0, MAP_SIZE);
-  MEM_BARRIER();
-
-  /* If we're running in "dumb" mode, we can't rely on the fork server
-     logic compiled into the target program, so we will just keep calling
-     execve(). There is a bit of code duplication between here and 
-     init_forkserver(), but c'est la vie. */
-
-  if (G->dumb_mode == 1 || G->no_forkserver) {
-
-    G->child_pid = fork();
-
-    if (G->child_pid < 0) PFATAL("fork() failed");
-
-    if (!G->child_pid) {
-
-      struct rlimit r;
-
-      if (G->mem_limit) {
-
-        r.rlim_max = r.rlim_cur = ((rlim_t)G->mem_limit) << 20;
-
-#ifdef RLIMIT_AS
-
-        setrlimit(RLIMIT_AS, &r); /* Ignore errors */
-
-#else
-
-        setrlimit(RLIMIT_DATA, &r); /* Ignore errors */
-
-#endif /* ^RLIMIT_AS */
-
-      }
-
-      r.rlim_max = r.rlim_cur = 0;
-
-      setrlimit(RLIMIT_CORE, &r); /* Ignore errors */
-
-      /* Isolate the process and configure standard descriptors. If G->out_file is
-         specified, stdin is /dev/null; otherwise, G->out_fd is cloned instead. */
-
-      setsid();
-
-      dup2(G->dev_null_fd, 1);
-      dup2(G->dev_null_fd, 2);
-
-      if (G->out_file) {
-
-        dup2(G->dev_null_fd, 0);
-
-      } else {
-
-        dup2(G->out_fd, 0);
-        close(G->out_fd);
-
-      }
-
-      /* On Linux, would be faster to use O_CLOEXEC. Maybe TODO. */
-
-      close(G->dev_null_fd);
-      close(G->out_dir_fd);
-      close(G->dev_urandom_fd);
-      close(fileno(G->plot_file));
-
-      /* Set sane defaults for ASAN if nothing else specified. */
-
-      setenv("ASAN_OPTIONS", "abort_on_error=1:"
-                             "detect_leaks=0:"
-                             "allocator_may_return_null=1", 0);
-
-      setenv("MSAN_OPTIONS", "exit_code=" STRINGIFY(MSAN_ERROR) ":"
-                             "msan_track_origins=0", 0);
-
-      execv(G->target_path, argv);
-
-      /* Use a distinctive bitmap value to tell the parent about execv()
-         falling through. */
-
-      *(u32*)G->trace_bits = EXEC_FAIL_SIG;
-      exit(0);
-
-    }
-
-  } else {
-
-    s32 res;
-
-    /* In non-dumb mode, we have the fork server up and running, so simply
-       tell it to have at it, and then read back PID. */
-
-    if ((res = write(G->fsrv_ctl_fd, &prev_timed_out, 4)) != 4) {
-
-      if (G->stop_soon) return 0;
-      RPFATAL(res, "Unable to request new process from fork server (OOM?)");
-
-    }
-
-    if ((res = read(G->fsrv_st_fd, &G->child_pid, 4)) != 4) {
-
-      if (G->stop_soon) return 0;
-      RPFATAL(res, "Unable to request new process from fork server (OOM?)");
-
-    }
-
-    if (G->child_pid <= 0) FATAL("Fork server is misbehaving (OOM?)");
-
-  }
-
-  /* Configure timeout, as requested by user, then wait for child to terminate. */
-
-  it.it_value.tv_sec = (G->exec_tmout / 1000);
-  it.it_value.tv_usec = (G->exec_tmout % 1000) * 1000;
-
-  setitimer(ITIMER_REAL, &it, NULL);
-
-  /* The SIGALRM handler simply kills the G->child_pid and sets G->child_timed_out. */
-
-  if (G->dumb_mode == 1 || G->no_forkserver) {
-
-    if (waitpid(G->child_pid, &status, 0) <= 0) PFATAL("waitpid() failed");
-
-  } else {
-
-    s32 res;
-
-    if ((res = read(G->fsrv_st_fd, &status, 4)) != 4) {
-
-      if (G->stop_soon) return 0;
-      RPFATAL(res, "Unable to communicate with fork server");
-
-    }
-
-  }
-
-  G->child_pid = 0;
-  it.it_value.tv_sec = 0;
-  it.it_value.tv_usec = 0;
-
-  setitimer(ITIMER_REAL, &it, NULL);
-
-  G->total_execs++;
-
-  /* Any subsequent operations on G->trace_bits must not be moved by the
-     compiler below this point. Past this location, G->trace_bits[] behave
-     very normally and do not have to be treated as volatile. */
-
-  MEM_BARRIER();
-
-  tb4 = *(u32*)G->trace_bits;
-
-#ifdef __x86_64__
-  classify_counts((u64*)G->trace_bits);
-#else
-  classify_counts((u32*)G->trace_bits);
-#endif /* ^__x86_64__ */
-
-  prev_timed_out = G->child_timed_out;
-
-  /* Report outcome to caller. */
-
-  if (G->child_timed_out) return FAULT_HANG;
-
-  if (WIFSIGNALED(status) && !G->stop_soon) {
-    G->kill_signal = WTERMSIG(status);
-    return FAULT_CRASH;
-  }
-
-  /* A somewhat nasty hack for MSAN, which doesn't support abort_on_error and
-     must use a special exit code. */
-
-  if (G->uses_asan && WEXITSTATUS(status) == MSAN_ERROR) {
-    G->kill_signal = 0;
-    return FAULT_CRASH;
-  }
-
-  if ((G->dumb_mode == 1 || G->no_forkserver) && tb4 == EXEC_FAIL_SIG)
-    return FAULT_ERROR;
-
-  return FAULT_NONE;
-
-}
-
 
 /* Write modified data to file for testing. If G->out_file is set, the old file
    is unlinked and a new one is created. Otherwise, G->out_fd is rewound and
    truncated. */
 
-static void write_to_testcase(struct g* G, void* mem, u32 len) {
+void write_to_testcase(struct g* G, void* mem, u32 len) {
 
   s32 fd = G->out_fd;
 
@@ -1975,8 +1694,6 @@ static void write_with_gap(struct g* G, void* mem, u32 len, u32 skip_at,
 
 }
 
-
-static void show_stats(struct g* G);
 
 /* Calibrate a new test case. This is done when processing the input directory
    to warn about flaky or otherwise problematic test cases early on; and when
@@ -2539,8 +2256,8 @@ static void write_crash_readme(struct g* G) {
    save or queue the input test case for further analysis if so. Returns 1 if
    entry is saved, 0 otherwise. */
 
-static u8 save_if_interesting(struct g* G, char** argv, void* mem, u32 len,
-                              u8 fault) {
+u8 save_if_interesting(struct g* G, char** argv, void* mem, u32 len,
+                       u8 fault) {
 
   u8  *fn = "";
   u8  hnb;
@@ -3251,7 +2968,7 @@ static void check_term_size(struct g* G);
 /* A spiffy retro stats screen! This is called every G->stats_update_freq
    execve() calls, plus in several other circumstances. */
 
-static void show_stats(struct g* G) {
+void show_stats(struct g* G) {
 
   static u64 last_stats_ms, last_plot_ms, last_ms, last_execs;
   static double avg_exec;
@@ -3921,59 +3638,6 @@ abort_trimming:
 
   G->bytes_trim_out += q->len;
   return fault;
-
-}
-
-
-/* Write a modified test case, run program, process results. Handle
-   error conditions, returning 1 if it's time to bail out. This is
-   a helper function for fuzz_one(). */
-
-u8 common_fuzz_stuff(struct g* G, char** argv, u8* out_buf, u32 len) {
-
-  u8 fault;
-
-  if (G->post_handler) {
-
-    out_buf = G->post_handler(out_buf, &len);
-    if (!out_buf || !len) return 0;
-
-  }
-
-  write_to_testcase(G, out_buf, len);
-
-  fault = run_target(G, argv);
-
-  if (G->stop_soon) return 1;
-
-  if (fault == FAULT_HANG) {
-
-    if (G->subseq_hangs++ > HANG_LIMIT) {
-      G->cur_skipped_paths++;
-      return 1;
-    }
-
-  } else G->subseq_hangs = 0;
-
-  /* Users can hit us with SIGUSR1 to request the current input
-     to be abandoned. */
-
-  if (G->skip_requested) {
-
-     G->skip_requested = 0;
-     G->cur_skipped_paths++;
-     return 1;
-
-  }
-
-  /* This handles FAULT_ERROR for us: */
-
-  G->queued_discovered += save_if_interesting(G, argv, out_buf, len, fault);
-
-  if (!(G->stage_cur % G->stats_update_freq) || G->stage_cur + 1 == G->stage_max)
-    show_stats(G);
-
-  return 0;
 
 }
 

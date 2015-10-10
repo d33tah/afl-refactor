@@ -1,4 +1,11 @@
+#ifndef _HAVE_UTIL_H
+#define __HAVE_UTIL_H
+
+#include "types.h"
+
+u8* DI(u64 val);
 inline u32 UR(struct g* G, u32 limit);
+u32 next_p2(u32 val);
 
 #define AREP4(_sym)   (_sym), (_sym), (_sym), (_sym)
 #define AREP8(_sym)   AREP4(_sym), AREP4(_sym)
@@ -7,4 +14,11 @@ inline u32 UR(struct g* G, u32 limit);
 #define AREP64(_sym)  AREP32(_sym), AREP32(_sym)
 #define AREP128(_sym) AREP64(_sym), AREP64(_sym)
 
+#define CHK_FORMAT(_divisor, _limit_mult, _fmt, _cast) do { \
+    if (val < (_divisor) * (_limit_mult)) { \
+      sprintf(tmp[cur], _fmt, ((_cast)val) / (_divisor)); \
+      return tmp[cur]; \
+    } \
+  } while (0)
 
+#endif

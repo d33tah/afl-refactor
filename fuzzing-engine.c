@@ -19,6 +19,201 @@ static s8  interesting_8[]  = { INTERESTING_8 };
 static s16 interesting_16[] = { INTERESTING_8, INTERESTING_16 };
 static s32 interesting_32[] = { INTERESTING_8, INTERESTING_16, INTERESTING_32 };
 
+
+/* The same, but with an adjustable gap. Used for trimming. */
+
+static void write_with_gap(struct g* G, void* mem, u32 len, u32 skip_at,
+                           u32 skip_len) {
+
+  s32 fd = G->out_fd;
+  u32 tail_len = len - skip_at - skip_len;
+
+  if (G->out_file) {
+
+    unlink(G->out_file); /* Ignore errors. */
+
+    fd = open(G->out_file, O_WRONLY | O_CREAT | O_EXCL, 0600);
+
+    if (fd < 0) PFATAL("Unable to create '%s'", G->out_file);
+
+  } else lseek(fd, 0, SEEK_SET);
+
+  if (skip_at) ck_write(fd, mem, skip_at, G->out_file);
+
+  if (tail_len) ck_write(fd, mem + skip_at + skip_len, tail_len, G->out_file);
+
+  if (!G->out_file) {
+
+    if (ftruncate(fd, len - skip_len)) PFATAL("ftruncate() failed");
+    lseek(fd, 0, SEEK_SET);
+
+  } else close(fd);
+
+}
+
+
+
+/* Trim all new test cases to save cycles when doing deterministic checks. The
+   trimmer uses power-of-two increments somewhere between 1/16 and 1/1024 of
+   file size, to keep the stage short and sweet. */
+
+u8 trim_case(struct g* G, char** argv, struct queue_entry* q, u8* in_buf) {
+
+  static u8 tmp[64];
+  static u8 clean_trace[MAP_SIZE];
+
+  u8  needs_write = 0, fault = 0;
+  u32 trim_exec = 0;
+  u32 remove_len;
+  u32 len_p2;
+
+  /* Although the trimmer will be less useful when variable behavior is
+     detected, it will still work to some extent, so we don't check for
+     this. */
+
+  if (q->len < 5) return 0;
+
+  G->stage_name = tmp;
+  G->bytes_trim_in += q->len;
+
+  /* Select initial chunk len, starting with large steps. */
+
+  len_p2 = next_p2(q->len);
+
+  remove_len = MAX(len_p2 / TRIM_START_STEPS, TRIM_MIN_BYTES);
+
+  /* Continue until the number of steps gets too high or the stepover
+     gets too small. */
+
+  while (remove_len >= MAX(len_p2 / TRIM_END_STEPS, TRIM_MIN_BYTES)) {
+
+    u32 remove_pos = remove_len;
+
+    sprintf(tmp, "trim %s/%s", DI(remove_len), DI(remove_len));
+
+    G->stage_cur = 0;
+    G->stage_max = q->len / remove_len;
+
+    while (remove_pos < q->len) {
+
+      u32 trim_avail = MIN(remove_len, q->len - remove_pos);
+      u32 cksum;
+
+      write_with_gap(G, in_buf, q->len, remove_pos, trim_avail);
+
+      fault = run_target(G, argv, &G->kill_signal, &G->total_execs,
+                         &G->stop_soon, &G->child_timed_out, &G->child_pid,
+                         G->trace_bits);
+      G->trim_execs++;
+
+      if (G->stop_soon || fault == FAULT_ERROR) goto abort_trimming;
+
+      /* Note that we don't keep track of crashes or hangs here; maybe TODO? */
+
+      cksum = hash32(G->trace_bits, MAP_SIZE, HASH_CONST);
+
+      /* If the deletion had no impact on the trace, make it permanent. This
+         isn't perfect for variable-path inputs, but we're just making a
+         best-effort pass, so it's not a big deal if we end up with false
+         negatives every now and then. */
+
+      if (cksum == q->exec_cksum) {
+
+        u32 move_tail = q->len - remove_pos - trim_avail;
+
+        q->len -= trim_avail;
+        len_p2  = next_p2(q->len);
+
+        memmove(in_buf + remove_pos, in_buf + remove_pos + trim_avail, 
+                move_tail);
+
+        /* Let's save a clean trace, which will be needed by
+           update_bitmap_score once we're done with the trimming stuff. */
+
+        if (!needs_write) {
+
+          needs_write = 1;
+          memcpy(clean_trace, G->trace_bits, MAP_SIZE);
+
+        }
+
+      } else remove_pos += remove_len;
+
+      /* Since this can be slow, update the screen every now and then. */
+
+      if (!(trim_exec++ % G->stats_update_freq)) show_stats(G);
+      G->stage_cur++;
+
+    }
+
+    remove_len >>= 1;
+
+  }
+
+  /* If we have made changes to in_buf, we also need to update the on-disk
+     version of the test case. */
+
+  if (needs_write) {
+
+    s32 fd;
+
+    unlink(q->fname); /* ignore errors */
+
+    fd = open(q->fname, O_WRONLY | O_CREAT | O_EXCL, 0600);
+
+    if (fd < 0) PFATAL("Unable to create '%s'", q->fname);
+
+    ck_write(fd, in_buf, q->len, q->fname);
+    close(fd);
+
+    memcpy(G->trace_bits, clean_trace, MAP_SIZE);
+    update_bitmap_score(G, q);
+
+  }
+
+
+
+abort_trimming:
+
+  G->bytes_trim_out += q->len;
+  return fault;
+
+}
+
+
+
+/* Helper to choose random block len for block operations in fuzz_one().
+   Doesn't return zero, provided that max_len is > 0. */
+
+static u32 choose_block_len(struct g* G, u32 limit) {
+
+  u32 min_value, max_value;
+  u32 rlim = MIN(G->queue_cycle, 3);
+
+  if (!G->run_over10m) rlim = 1;
+
+  switch (UR(G, rlim)) {
+
+    case 0:  min_value = 1;
+             max_value = HAVOC_BLK_SMALL;
+             break;
+
+    case 1:  min_value = HAVOC_BLK_SMALL;
+             max_value = HAVOC_BLK_MEDIUM;
+             break;
+
+    default: min_value = HAVOC_BLK_MEDIUM;
+             max_value = HAVOC_BLK_LARGE;
+
+
+  }
+
+  if (min_value >= limit) min_value = 1;
+
+  return min_value + UR(G, MIN(max_value, limit) - min_value + 1);
+
+}
+
 /* Write a modified test case, run program, process results. Handle
    error conditions, returning 1 if it's time to bail out. This is
    a helper function for fuzz_one(). */

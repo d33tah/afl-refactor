@@ -190,11 +190,10 @@ struct g {
   
 };
 
-u8 trim_case(struct g* G, char** argv, struct queue_entry* q, u8* in_buf);
+void update_bitmap_score(struct g* G, struct queue_entry* q);
 void write_to_testcase(struct g* G, void* mem, u32 len);
 void show_stats(struct g* G);
 u8 save_if_interesting(struct g* G, char** argv, void* mem, u32 len, u8 fault);
-u32 choose_block_len(struct g* G, u32 limit);
 u32 calculate_score(struct g* G, struct queue_entry* q);
 u8 calibrate_case(struct g* G, char** argv, struct queue_entry* q,
                   u8* use_mem, u32 handicap, u8 from_queue);

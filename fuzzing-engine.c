@@ -18,6 +18,39 @@ static s8  interesting_8[]  = { INTERESTING_8 };
 static s16 interesting_16[] = { INTERESTING_8, INTERESTING_16 };
 static s32 interesting_32[] = { INTERESTING_8, INTERESTING_16, INTERESTING_32 };
 
+#ifndef IGNORE_FINDS
+
+/* Helper function to compare buffers; returns first and last differing offset. We
+   use this to find reasonable locations for splicing two files. */
+
+static void locate_diffs(u8* ptr1, u8* ptr2, u32 len, s32* first, s32* last) {
+
+  s32 f_loc = -1;
+  s32 l_loc = -1;
+  u32 pos;
+
+  for (pos = 0; pos < len; pos++) {
+
+    if (*(ptr1++) != *(ptr2++)) {
+
+      if (f_loc == -1) f_loc = pos;
+      l_loc = pos;
+
+    }
+
+  }
+
+  *first = f_loc;
+  *last = l_loc;
+
+  return;
+
+}
+
+#endif /* !IGNORE_FINDS */
+
+
+
 /* Helper function to see if a particular change (xor_val = old ^ new) could
    be a product of deterministic bit flips with the lengths and stepovers
    attempted by afl-fuzz. This is used to avoid dupes in some of the

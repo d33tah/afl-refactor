@@ -190,7 +190,6 @@ struct g {
   
 };
 
-void locate_diffs(u8* ptr1, u8* ptr2, u32 len, s32* first, s32* last);
 u8 trim_case(struct g* G, char** argv, struct queue_entry* q, u8* in_buf);
 u8 common_fuzz_stuff(struct g* G, char** argv, u8* out_buf, u32 len);
 u32 choose_block_len(struct g* G, u32 limit);

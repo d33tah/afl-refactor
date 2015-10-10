@@ -33,6 +33,7 @@
 #include "hash.h"
 #include "enums.h"
 #include "afl-fuzz.h"
+#include "util.h"
 
 #include <stdio.h>
 #include <unistd.h>
@@ -118,7 +119,7 @@ static u64 get_cur_time_us(void) {
 /* Generate a random number (from 0 to limit - 1). This may
    have slight bias. */
 
-static inline u32 UR(struct g* G, u32 limit) {
+inline u32 UR(struct g* G, u32 limit) {
 
   if (!G->rand_cnt--) {
 

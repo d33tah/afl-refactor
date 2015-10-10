@@ -27,16 +27,18 @@ CFLAGS     += -Wall -D_FORTIFY_SOURCE=2 -g -Wno-pointer-sign \
 	      -DAFL_PATH=\"$(HELPER_PATH)\" -DDOC_PATH=\"$(DOC_PATH)\" \
 	      -DBIN_PATH=\"$(BIN_PATH)\" -DVERSION=\"$(VERSION)\"
 
+AFL_FUZZ_OBJS = afl-fuzz.o util.o
+
 ifneq "$(filter Linux GNU%,$(shell uname))" ""
   LDFLAGS  += -ldl
 endif
 
-COMM_HDR    = alloc-inl.h config.h debug.h types.h
+COMM_HDR    = alloc-inl.h config.h debug.h types.h util.h
 
 all: afl-fuzz
 
-afl-fuzz: afl-fuzz.c $(COMM_HDR)
-	$(CC) $(CFLAGS) $@.c -o $@ $(LDFLAGS)
+afl-fuzz: $(AFL_FUZZ_OBJS) $(COMM_HDR)
+	$(CC) $(CFLAGS) $(AFL_FUZZ_OBJS) -o $@ $(LDFLAGS)
 
 .NOTPARALLEL: clean
 

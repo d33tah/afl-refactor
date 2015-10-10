@@ -11,6 +11,8 @@ u8* DTD(u64 cur_ms, u64 event_ms);
 u32 count_bits(const u8* mem);
 u32 count_bytes(const u8* mem);
 u32 count_non_255_bytes(const u8* mem);
+double get_runnable_processes(void);
+void get_core_count(u32 *cpu_core_count, const u8 *doc_path);
 
 u8* DI(u64 val);
 inline u32 UR(struct g* G, u32 limit);

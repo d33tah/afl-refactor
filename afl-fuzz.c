@@ -2046,58 +2046,6 @@ static u8 delete_files(u8* path, u8* prefix) {
 }
 
 
-/* Get the number of runnable processes, with some simple smoothing. */
-
-static double get_runnable_processes(void) {
-
-  static double res;
-
-#if defined(__APPLE__) || defined(__FreeBSD__) || defined (__OpenBSD__)
-
-  /* I don't see any portable sysctl or so that would quickly give us the
-     number of runnable processes; the 1-minute load average can be a
-     semi-decent approximation, though. */
-
-  if (getloadavg(&res, 1) != 1) return 0;
-
-#else
-
-  /* On Linux, /proc/stat is probably the best way; load averages are
-     computed in funny ways and sometimes don't reflect extremely short-lived
-     processes well. */
-
-  FILE* f = fopen("/proc/stat", "r");
-  u8 tmp[1024];
-  u32 val = 0;
-
-  if (!f) return 0;
-
-  while (fgets(tmp, sizeof(tmp), f)) {
-
-    if (!strncmp(tmp, "procs_running ", 14) ||
-        !strncmp(tmp, "procs_blocked ", 14)) val += atoi(tmp + 14);
-
-  }
- 
-  fclose(f);
-
-  if (!res) {
-
-    res = val;
-
-  } else {
-
-    res = res * (1.0 - 1.0 / AVG_SMOOTHING) +
-          ((double)val) * (1.0 / AVG_SMOOTHING);
-
-  }
-
-#endif /* ^(__APPLE__ || __FreeBSD__ || __OpenBSD__) */
-
-  return res;
-
-}
-
 
 /* Delete the temporary directory used for in-place session resume. */
 
@@ -3606,81 +3554,6 @@ static void check_cpu_governor(void) {
 }
 
 
-/* Count the number of logical CPU cores. */
-
-static void get_core_count(struct g* G) {
-
-  u32 cur_runnable = 0;
-
-#if defined(__APPLE__) || defined(__FreeBSD__) || defined (__OpenBSD__)
-
-  size_t s = sizeof(G->cpu_core_count);
-
-  /* On *BSD systems, we can just use a sysctl to get the number of CPUs. */
-
-#ifdef __APPLE__
-
-  if (sysctlbyname("hw.logicalcpu", &G->cpu_core_count, &s, NULL, 0) < 0)
-    return;
-
-#else
-
-  int s_name[2] = { CTL_HW, HW_NCPU };
-
-  if (sysctl(s_name, 2, &G->cpu_core_count, &s, NULL, 0) < 0) return;
-
-#endif /* ^__APPLE__ */
-
-#else
-
-  /* On Linux, a simple way is to look at /proc/stat, especially since we'd
-     be parsing it anyway for other reasons later on. */
-
-  FILE* f = fopen("/proc/stat", "r");
-  u8 tmp[1024];
-
-  if (!f) return;
-
-  while (fgets(tmp, sizeof(tmp), f))
-    if (!strncmp(tmp, "cpu", 3) && isdigit(tmp[3])) G->cpu_core_count++;
-
-  fclose(f);
-  
-#endif /* ^(__APPLE__ || __FreeBSD__ || __OpenBSD__) */
-
-  if (G->cpu_core_count) {
-
-    cur_runnable = (u32)get_runnable_processes();
-
-#if defined(__APPLE__) || defined(__FreeBSD__) || defined (__OpenBSD__)
-
-    /* Add ourselves, since the 1-minute average doesn't include that yet. */
-
-    cur_runnable++;
-
-#endif /* __APPLE__ || __FreeBSD__ || __OpenBSD__ */
-
-    OKF("You have %u CPU cores and %u runnable tasks (utilization: %0.0f%%).",
-        G->cpu_core_count, cur_runnable, cur_runnable * 100.0 / G->cpu_core_count);
-
-    if (G->cpu_core_count > 1) {
-
-      if (cur_runnable > G->cpu_core_count * 1.5) {
-
-        WARNF("System under apparent load, performance may be spotty.");
-
-      } else if (cur_runnable + 1 <= G->cpu_core_count) {
-
-        OKF("Try parallel jobs - see %s/parallel_fuzzing.txt.", G->doc_path);
-  
-      }
-
-    }
-
-  } else WARNF("Unable to figure out the number of CPU cores.");
-
-}
-
 
 /* Validate and fix up G->out_dir and G->sync_dir when using -S. */
 
@@ -4152,7 +4025,7 @@ int main(int argc, char** argv) {
 
   check_if_tty(G);
 
-  get_core_count(G);
+  get_core_count(&G->cpu_core_count, G->doc_path);
   check_crash_handling();
   check_cpu_governor();
 

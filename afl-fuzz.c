@@ -2776,7 +2776,8 @@ void show_stats(const struct g* G, u8 *term_too_small,
    plus a bunch of warnings. Some calibration stuff also ended up here,
    along with several hardcoded constants. Maybe clean up eventually. */
 
-static void show_init_stats(struct g* G) {
+static void show_init_stats(const struct g* G, u32 *havoc_div,
+                            u32 *exec_tmout, u8 *timeout_given) {
 
   struct queue_entry* q = G->queue;
   u32 min_bits = 0, max_bits = 0;
@@ -2808,9 +2809,9 @@ static void show_init_stats(struct g* G) {
 
   /* Let's keep things moving with slow binaries. */
 
-  if (avg_us > 50000) G->havoc_div = 10;     /* 0-19 execs/sec   */
-  else if (avg_us > 20000) G->havoc_div = 5; /* 20-49 execs/sec  */
-  else if (avg_us > 10000) G->havoc_div = 2; /* 50-100 execs/sec */
+  if (avg_us > 50000) *havoc_div = 10;     /* 0-19 execs/sec   */
+  else if (avg_us > 20000) *havoc_div = 5; /* 20-49 execs/sec  */
+  else if (avg_us > 10000) *havoc_div = 2; /* 50-100 execs/sec */
 
   if (!G->resuming_fuzz) {
 
@@ -2840,7 +2841,7 @@ static void show_init_stats(struct g* G) {
       ((double)G->total_bitmap_size) / (G->total_bitmap_entries ? G->total_bitmap_entries : 1),
       DI(min_us), DI(max_us), DI(avg_us));
 
-  if (!G->timeout_given) {
+  if (!*timeout_given) {
 
     /* Figure out the appropriate timeout. The basic idea is: 5x average or
        1x max, rounded up to EXEC_TM_ROUND ms and capped at 1 second.
@@ -2849,23 +2850,23 @@ static void show_init_stats(struct g* G) {
        random scheduler jitter is less likely to have any impact, and because
        our patience is wearing thin =) */
 
-    if (avg_us > 50000) G->exec_tmout = avg_us * 2 / 1000;
-    else if (avg_us > 10000) G->exec_tmout = avg_us * 3 / 1000;
-    else G->exec_tmout = avg_us * 5 / 1000;
+    if (avg_us > 50000) *exec_tmout = avg_us * 2 / 1000;
+    else if (avg_us > 10000) *exec_tmout = avg_us * 3 / 1000;
+    else *exec_tmout = avg_us * 5 / 1000;
 
-    G->exec_tmout = MAX(G->exec_tmout, max_us / 1000);
-    G->exec_tmout = (G->exec_tmout + EXEC_TM_ROUND) / EXEC_TM_ROUND * EXEC_TM_ROUND;
+    *exec_tmout = MAX(*exec_tmout, max_us / 1000);
+    *exec_tmout = (*exec_tmout + EXEC_TM_ROUND) / EXEC_TM_ROUND * EXEC_TM_ROUND;
 
-    if (G->exec_tmout > EXEC_TIMEOUT) G->exec_tmout = EXEC_TIMEOUT;
+    if (*exec_tmout > EXEC_TIMEOUT) *exec_tmout = EXEC_TIMEOUT;
 
     ACTF("No -t option specified, so I'll use exec timeout of %u ms.", 
-         G->exec_tmout);
+         *exec_tmout);
 
-    G->timeout_given = 1;
+    *timeout_given = 1;
 
-  } else if (G->timeout_given == 3) {
+  } else if (*timeout_given == 3) {
 
-    ACTF("Applying timeout settings from resumed session (%u ms).", G->exec_tmout);
+    ACTF("Applying timeout settings from resumed session (%u ms).", *exec_tmout);
 
   }
 
@@ -4059,7 +4060,7 @@ int main(int argc, char** argv) {
 
   cull_queue(G);
 
-  show_init_stats(G);
+  show_init_stats(G, &G->havoc_div, &G->exec_tmout, &G->timeout_given);
 
   seek_to = find_start_position(G);
 

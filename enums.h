@@ -1,3 +1,5 @@
+#ifndef _HAVE_ENUMS_H
+#define _HAVE_ENUMS_H
 
 /* Fuzzing stages */
 
@@ -40,4 +42,4 @@ enum {
   /* 05 */ FAULT_NOBITS
 };
 
-
+#endif

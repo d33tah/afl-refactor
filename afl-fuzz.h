@@ -199,7 +199,6 @@ void show_stats(const struct g* G, u8 *term_too_small,
                 u8 *auto_changed, volatile u8 *stop_soon,
                 u32 *stats_update_freq, u8 *run_over10m);
 u8 save_if_interesting(struct g* G, char** argv, void* mem, u32 len, u8 fault);
-u32 calculate_score(struct g* G, struct queue_entry* q);
 u8 calibrate_case(struct g* G, char** argv, struct queue_entry* q,
                   u8* use_mem, u32 handicap, u8 from_queue);
 void mark_as_det_done(struct g* G, struct queue_entry* q);

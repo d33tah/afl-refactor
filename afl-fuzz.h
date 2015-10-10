@@ -190,9 +190,6 @@ struct g {
   
 };
 
-void update_bitmap_score(const u8 *trace_bits, struct queue_entry* q,
-                         struct queue_entry* top_rated[MAP_SIZE],
-                         u8 *score_changed);
 void write_to_testcase(struct g* G, void* mem, u32 len);
 void show_stats(const struct g* G, u8 *term_too_small,
                 volatile u8 *clear_screen, u8 *bitmap_changed,

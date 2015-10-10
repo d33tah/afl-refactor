@@ -245,14 +245,17 @@ struct g {
   
 };
 
-struct g* G;
+/* Pointers to G members used for atexit/signal handlers.
+   Those are assigned in setup_signal_handlers and before atexit(). */
+static s32 *shm_id_ptr, *forksrv_pid_ptr, *child_pid_ptr;
+volatile static u8 *stop_soon_ptr, *skip_requested_ptr, *child_timed_out_ptr;
+static volatile u8 *clear_screen_ptr;
 
 s8  interesting_8[]  = { INTERESTING_8 };
 s16 interesting_16[] = { INTERESTING_8, INTERESTING_16 };
 s32 interesting_32[] = { INTERESTING_8, INTERESTING_16, INTERESTING_32 };
 
-static void init_G(void) {
-  G = ck_alloc(sizeof(*G));
+static void init_G(struct g* G) {
   G->exec_tmout = EXEC_TIMEOUT;
   G->mem_limit = MEM_LIMIT;
   G->stats_update_freq = 1;
@@ -298,7 +301,7 @@ static u64 get_cur_time_us(void) {
 /* Generate a random number (from 0 to limit - 1). This may
    have slight bias. */
 
-static inline u32 UR(u32 limit) {
+static inline u32 UR(struct g* G, u32 limit) {
 
   if (!G->rand_cnt--) {
 
@@ -506,7 +509,7 @@ static u8* DTD(u64 cur_ms, u64 event_ms) {
    .state file to avoid repeating deterministic fuzzing when resuming aborted
    scans. */
 
-static void mark_as_det_done(struct queue_entry* q) {
+static void mark_as_det_done(struct g* G, struct queue_entry* q) {
 
   u8* fn = strrchr(q->fname, '/');
   s32 fd;
@@ -527,7 +530,7 @@ static void mark_as_det_done(struct queue_entry* q) {
 /* Mark as variable. Create symlinks if possible to make it easier to examine
    the files. */
 
-static void mark_as_variable(struct queue_entry* q) {
+static void mark_as_variable(struct g* G, struct queue_entry* q) {
 
   u8 *fn = strrchr(q->fname, '/') + 1, *ldest;
 
@@ -553,7 +556,7 @@ static void mark_as_variable(struct queue_entry* q) {
 /* Mark / unmark as redundant (edge-only). This is not used for restoring state,
    but may be useful for post-processing datasets. */
 
-static void mark_as_redundant(struct queue_entry* q, u8 state) {
+static void mark_as_redundant(struct g* G, struct queue_entry* q, u8 state) {
 
   u8* fn;
   s32 fd;
@@ -584,7 +587,7 @@ static void mark_as_redundant(struct queue_entry* q, u8 state) {
 
 /* Append new test case to the queue. */
 
-static void add_to_queue(u8* fname, u32 len, u8 passed_det) {
+static void add_to_queue(struct g* G, u8* fname, u32 len, u8 passed_det) {
 
   struct queue_entry* q = ck_alloc(sizeof(struct queue_entry));
 
@@ -619,7 +622,7 @@ static void add_to_queue(u8* fname, u32 len, u8 passed_det) {
 
 /* Destroy the entire queue. */
 
-static void destroy_queue(void) {
+static void destroy_queue(struct g* G) {
 
   struct queue_entry *q = G->queue, *n;
 
@@ -640,7 +643,7 @@ static void destroy_queue(void) {
    -B option, to focus a separate fuzzing session on a particular
    interesting input without rediscovering all the others. */
 
-static void write_bitmap(void) {
+static void write_bitmap(struct g* G) {
 
   u8* fname;
   s32 fd;
@@ -663,7 +666,7 @@ static void write_bitmap(void) {
 
 /* Read bitmap from file. This is for the -B option again. */
 
-static void read_bitmap(u8* fname) {
+static void read_bitmap(struct g* G, u8* fname) {
 
   s32 fd = open(fname, O_RDONLY);
 
@@ -687,7 +690,7 @@ static void read_bitmap(u8* fname) {
 #define FFL(_b) (0xffULL << ((_b) << 3))
 #define FF(_b)  (0xff << ((_b) << 3))
 
-static inline u8 has_new_bits(u8* virgin_map) {
+static inline u8 has_new_bits(struct g* G, u8* virgin_map) {
 
 #ifdef __x86_64__
 
@@ -1021,7 +1024,7 @@ static inline void classify_counts(u32* mem) {
 
 static void remove_shm(void) {
 
-  shmctl(G->shm_id, IPC_RMID, NULL);
+  shmctl(*shm_id_ptr, IPC_RMID, NULL);
 
 }
 
@@ -1054,7 +1057,7 @@ static void minimize_bits(u8* dst, u8* src) {
    for every byte in the bitmap. We win that slot if there is no previous
    contender, or if the contender has a more favorable speed x size factor. */
 
-static void update_bitmap_score(struct queue_entry* q) {
+static void update_bitmap_score(struct g* G, struct queue_entry* q) {
 
   u32 i;
   u64 fav_factor = q->exec_us * q->len;
@@ -1105,7 +1108,7 @@ static void update_bitmap_score(struct queue_entry* q) {
    until the next run. The favored entries are given more air time during
    all fuzzing steps. */
 
-static void cull_queue(void) {
+static void cull_queue(struct g* G) {
 
   struct queue_entry* q;
   static u8 temp_v[MAP_SIZE >> 3];
@@ -1151,7 +1154,7 @@ static void cull_queue(void) {
   q = G->queue;
 
   while (q) {
-    mark_as_redundant(q, !q->favored);
+    mark_as_redundant(G, q, !q->favored);
     q = q->next;
   }
 
@@ -1160,7 +1163,7 @@ static void cull_queue(void) {
 
 /* Configure shared memory and G->virgin_bits. This is called at startup. */
 
-static void setup_shm(void) {
+static void setup_shm(struct g* G) {
 
   u8* shm_str;
 
@@ -1173,6 +1176,7 @@ static void setup_shm(void) {
 
   if (G->shm_id < 0) PFATAL("shmget() failed");
 
+  shm_id_ptr = &G->shm_id;
   atexit(remove_shm);
 
   shm_str = alloc_printf("%d", G->shm_id);
@@ -1196,7 +1200,7 @@ static void setup_shm(void) {
 
 /* Load postprocessor, if available. */
 
-static void setup_post(void) {
+static void setup_post(struct g* G) {
 
   void* dh;
   u8* fn = getenv("AFL_POST_LIBRARY");
@@ -1224,7 +1228,7 @@ static void setup_post(void) {
 /* Read all testcases from the input directory, then queue them for testing.
    Called at startup. */
 
-static void read_testcases(void) {
+static void read_testcases(struct g* G) {
 
   struct dirent **nl;
   s32 nl_cnt;
@@ -1294,7 +1298,7 @@ static void read_testcases(void) {
     if (!access(dfn, F_OK)) passed_det = 1;
     ck_free(dfn);
 
-    add_to_queue(fn, st.st_size, passed_det);
+    add_to_queue(G, fn, st.st_size, passed_det);
 
   }
 
@@ -1337,8 +1341,8 @@ static int compare_extras_use_d(const void* p1, const void* p2) {
 
 /* Read G->extras from a file, sort by size. */
 
-static void load_extras_file(u8* fname, u32* min_len, u32* max_len,
-                             u32 dict_level) {
+static void load_extras_file(struct g* G, u8* fname, u32* min_len,
+                             u32* max_len, u32 dict_level) {
 
   FILE* f;
   u8  buf[MAX_LINE];
@@ -1474,7 +1478,7 @@ static void load_extras_file(u8* fname, u32* min_len, u32* max_len,
 
 /* Read G->extras from the G->extras directory and sort them by size. */
 
-static void load_extras(u8* dir) {
+static void load_extras(struct g* G, u8* dir) {
 
   DIR* d;
   struct dirent* de;
@@ -1497,7 +1501,7 @@ static void load_extras(u8* dir) {
   if (!d) {
 
     if (errno == ENOTDIR) {
-      load_extras_file(dir, &min_len, &max_len, dict_level);
+      load_extras_file(G, dir, &min_len, &max_len, dict_level);
       goto check_and_sort;
     }
 
@@ -1586,7 +1590,7 @@ static inline u8 memcmp_nocase(u8* m1, u8* m2, u32 len) {
 
 /* Maybe add automatic extra. */
 
-static void maybe_add_auto(u8* mem, u32 len) {
+static void maybe_add_auto(struct g* G, u8* mem, u32 len) {
 
   u32 i;
 
@@ -1665,7 +1669,7 @@ static void maybe_add_auto(u8* mem, u32 len) {
   } else {
 
     i = MAX_AUTO_EXTRAS / 2 +
-        UR((MAX_AUTO_EXTRAS + 1) / 2);
+        UR(G, (MAX_AUTO_EXTRAS + 1) / 2);
 
     ck_free(G->a_extras[i].data);
 
@@ -1692,7 +1696,7 @@ sort_a_extras:
 
 /* Save automatically generated G->extras. */
 
-static void save_auto(void) {
+static void save_auto(struct g* G) {
 
   u32 i;
 
@@ -1720,7 +1724,7 @@ static void save_auto(void) {
 
 /* Load automatically generated G->extras. */
 
-static void load_auto(void) {
+static void load_auto(struct g* G) {
 
   u32 i;
 
@@ -1748,7 +1752,7 @@ static void load_auto(void) {
     if (len < 0) PFATAL("Unable to read from '%s'", fn);
 
     if (len >= MIN_AUTO_EXTRA && len <= MAX_AUTO_EXTRA)
-      maybe_add_auto(tmp, len);
+      maybe_add_auto(G, tmp, len);
 
     close(fd);
     ck_free(fn);
@@ -1763,7 +1767,7 @@ static void load_auto(void) {
 
 /* Destroy G->extras. */
 
-static void destroy_extras(void) {
+static void destroy_extras(struct g* G) {
 
   u32 i;
 
@@ -1788,7 +1792,7 @@ static void destroy_extras(void) {
    cloning a stopped child. So, we just execute once, and then send commands
    through a pipe. The other part of this logic is in afl-as.h. */
 
-static void init_forkserver(char** argv) {
+static void init_forkserver(struct g* G, char** argv) {
 
   static struct itimerval it;
   int st_pipe[2], ctl_pipe[2];
@@ -2069,7 +2073,7 @@ static void init_forkserver(char** argv) {
 /* Execute target application, monitoring for timeouts. Return status
    information. The called program will update G->trace_bits[]. */
 
-static u8 run_target(char** argv) {
+static u8 run_target(struct g* G, char** argv) {
 
   static struct itimerval it;
   static u32 prev_timed_out = 0;
@@ -2270,7 +2274,7 @@ static u8 run_target(char** argv) {
    is unlinked and a new one is created. Otherwise, G->out_fd is rewound and
    truncated. */
 
-static void write_to_testcase(void* mem, u32 len) {
+static void write_to_testcase(struct g* G, void* mem, u32 len) {
 
   s32 fd = G->out_fd;
 
@@ -2298,7 +2302,8 @@ static void write_to_testcase(void* mem, u32 len) {
 
 /* The same, but with an adjustable gap. Used for trimming. */
 
-static void write_with_gap(void* mem, u32 len, u32 skip_at, u32 skip_len) {
+static void write_with_gap(struct g* G, void* mem, u32 len, u32 skip_at,
+                           u32 skip_len) {
 
   s32 fd = G->out_fd;
   u32 tail_len = len - skip_at - skip_len;
@@ -2327,14 +2332,14 @@ static void write_with_gap(void* mem, u32 len, u32 skip_at, u32 skip_len) {
 }
 
 
-static void show_stats(void);
+static void show_stats(struct g* G);
 
 /* Calibrate a new test case. This is done when processing the input directory
    to warn about flaky or otherwise problematic test cases early on; and when
    new paths are discovered to detect variable behavior and so on. */
 
-static u8 calibrate_case(char** argv, struct queue_entry* q, u8* use_mem,
-                         u32 handicap, u8 from_queue) {
+static u8 calibrate_case(struct g* G, char** argv, struct queue_entry* q,
+                         u8* use_mem, u32 handicap, u8 from_queue) {
 
   u8  fault = 0, new_bits = 0, var_detected = 0, first_run = (q->exec_cksum == 0);
   u64 start_us, stop_us;
@@ -2359,7 +2364,7 @@ static u8 calibrate_case(char** argv, struct queue_entry* q, u8* use_mem,
      count its spin-up time toward binary calibration. */
 
   if (G->dumb_mode != 1 && !G->no_forkserver && !G->forksrv_pid)
-    init_forkserver(argv);
+    init_forkserver(G, argv);
 
   start_us = get_cur_time_us();
 
@@ -2367,11 +2372,11 @@ static u8 calibrate_case(char** argv, struct queue_entry* q, u8* use_mem,
 
     u32 cksum;
 
-    if (!first_run && !(G->stage_cur % G->stats_update_freq)) show_stats();
+    if (!first_run && !(G->stage_cur % G->stats_update_freq)) show_stats(G);
 
-    write_to_testcase(use_mem, q->len);
+    write_to_testcase(G, use_mem, q->len);
 
-    fault = run_target(argv);
+    fault = run_target(G, argv);
 
     /* G->stop_soon is set by the handler for Ctrl+C. When it's pressed,
        we want to bail out quickly. */
@@ -2387,7 +2392,7 @@ static u8 calibrate_case(char** argv, struct queue_entry* q, u8* use_mem,
 
     if (q->exec_cksum != cksum) {
 
-      u8 hnb = has_new_bits(G->virgin_bits);
+      u8 hnb = has_new_bits(G, G->virgin_bits);
       if (hnb > new_bits) new_bits = hnb;
 
       if (!G->no_var_check && q->exec_cksum) {
@@ -2417,7 +2422,7 @@ static u8 calibrate_case(char** argv, struct queue_entry* q, u8* use_mem,
   G->total_bitmap_size += q->bitmap_size;
   G->total_bitmap_entries++;
 
-  update_bitmap_score(q);
+  update_bitmap_score(G, q);
 
   /* If this case didn't result in new output from the instrumentation, tell
      parent. This is a non-critical problem, but something to warn the user
@@ -2435,7 +2440,7 @@ abort_calibration:
   /* Mark variable paths. */
 
   if (var_detected && !q->var_behavior) {
-    mark_as_variable(q);
+    mark_as_variable(G, q);
     G->queued_variable++;
   }
 
@@ -2444,7 +2449,7 @@ abort_calibration:
   G->stage_max  = old_sm;
   G->exec_tmout = old_tmout;
 
-  if (!first_run) show_stats();
+  if (!first_run) show_stats(G);
 
   return fault;
 
@@ -2453,7 +2458,7 @@ abort_calibration:
 
 /* Examine map coverage. Called once, for first test case. */
 
-static void check_map_coverage(void) {
+static void check_map_coverage(struct g* G) {
 
   u32 i;
 
@@ -2470,7 +2475,7 @@ static void check_map_coverage(void) {
 /* Perform dry run of all test cases to confirm that the app is working as
    expected. This is done only for the initial inputs, and only once. */
 
-static void perform_dry_run(char** argv) {
+static void perform_dry_run(struct g* G, char** argv) {
 
   struct queue_entry* q = G->queue;
   u32 cal_failures = 0;
@@ -2496,7 +2501,7 @@ static void perform_dry_run(char** argv) {
 
     close(fd);
 
-    res = calibrate_case(argv, q, use_mem, 0, 1);
+    res = calibrate_case(G, argv, q, use_mem, 0, 1);
     ck_free(use_mem);
 
     if (G->stop_soon) return;
@@ -2509,7 +2514,7 @@ static void perform_dry_run(char** argv) {
 
       case FAULT_NONE:
 
-        if (q == G->queue) check_map_coverage();
+        if (q == G->queue) check_map_coverage(G);
 
         if (G->crash_mode) FATAL("Test case '%s' does *NOT* crash", fn);
 
@@ -2702,12 +2707,12 @@ static void link_or_copy(u8* old_path, u8* new_path) {
 }
 
 
-static void nuke_resume_dir(void);
+static void nuke_resume_dir(struct g* G);
 
 /* Create hard links for input test cases in the output directory, choosing
    good names and pivoting accordingly. */
 
-static void pivot_inputs(void) {
+static void pivot_inputs(struct g* G) {
 
   struct queue_entry* q = G->queue;
   u32 id = 0;
@@ -2783,14 +2788,14 @@ static void pivot_inputs(void) {
 
     /* Make sure that the passed_det value carries over, too. */
 
-    if (q->passed_det) mark_as_det_done(q);
+    if (q->passed_det) mark_as_det_done(G, q);
 
     q = q->next;
     id++;
 
   }
 
-  if (G->in_place_resume) nuke_resume_dir();
+  if (G->in_place_resume) nuke_resume_dir(G);
 
 }
 
@@ -2800,7 +2805,7 @@ static void pivot_inputs(void) {
 /* Construct a file name for a new test case, capturing the operation
    that led to its discovery. Uses a static buffer. */
 
-static u8* describe_op(u8 hnb) {
+static u8* describe_op(struct g* G, u8 hnb) {
 
   static u8 ret[256];
 
@@ -2841,7 +2846,7 @@ static u8* describe_op(u8 hnb) {
 
 /* Write a message accompanying the crash directory :-) */
 
-static void write_crash_readme(void) {
+static void write_crash_readme(struct g* G) {
 
   u8* fn = alloc_printf("%s/crashes/README.txt", G->out_dir);
   s32 fd;
@@ -2890,7 +2895,8 @@ static void write_crash_readme(void) {
    save or queue the input test case for further analysis if so. Returns 1 if
    entry is saved, 0 otherwise. */
 
-static u8 save_if_interesting(char** argv, void* mem, u32 len, u8 fault) {
+static u8 save_if_interesting(struct g* G, char** argv, void* mem, u32 len,
+                              u8 fault) {
 
   u8  *fn = "";
   u8  hnb;
@@ -2902,7 +2908,7 @@ static u8 save_if_interesting(char** argv, void* mem, u32 len, u8 fault) {
     /* Keep only if there are new bits in the map, add to queue for
        future fuzzing, etc. */
 
-    if (!(hnb = has_new_bits(G->virgin_bits))) {
+    if (!(hnb = has_new_bits(G, G->virgin_bits))) {
       if (G->crash_mode) G->total_crashes++;
       return 0;
     }    
@@ -2910,7 +2916,7 @@ static u8 save_if_interesting(char** argv, void* mem, u32 len, u8 fault) {
 #ifndef SIMPLE_FILES
 
     fn = alloc_printf("%s/queue/id:%06u,%s", G->out_dir, G->queued_paths,
-                      describe_op(hnb));
+                      describe_op(G, hnb));
 
 #else
 
@@ -2918,7 +2924,7 @@ static u8 save_if_interesting(char** argv, void* mem, u32 len, u8 fault) {
 
 #endif /* ^!SIMPLE_FILES */
 
-    add_to_queue(fn, len, 0);
+    add_to_queue(G, fn, len, 0);
 
     if (hnb == 2) {
       G->queue_top->has_new_cov = 1;
@@ -2930,7 +2936,7 @@ static u8 save_if_interesting(char** argv, void* mem, u32 len, u8 fault) {
     /* Try to calibrate inline; this also calls update_bitmap_score() when
        successful. */
 
-    res = calibrate_case(argv, G->queue_top, mem, G->queue_cycle - 1, 0);
+    res = calibrate_case(G, argv, G->queue_top, mem, G->queue_cycle - 1, 0);
 
     if (res == FAULT_ERROR)
       FATAL("Unable to execute target application");
@@ -2965,14 +2971,14 @@ static u8 save_if_interesting(char** argv, void* mem, u32 len, u8 fault) {
         simplify_trace((u32*)G->trace_bits);
 #endif /* ^__x86_64__ */
 
-        if (!has_new_bits(G->virgin_hang)) return keeping;
+        if (!has_new_bits(G, G->virgin_hang)) return keeping;
 
       }
 
 #ifndef SIMPLE_FILES
 
       fn = alloc_printf("%s/hangs/id:%06llu,%s", G->out_dir,
-                        G->unique_hangs, describe_op(0));
+                        G->unique_hangs, describe_op(G, 0));
 
 #else
 
@@ -3004,16 +3010,16 @@ static u8 save_if_interesting(char** argv, void* mem, u32 len, u8 fault) {
         simplify_trace((u32*)G->trace_bits);
 #endif /* ^__x86_64__ */
 
-        if (!has_new_bits(G->virgin_crash)) return keeping;
+        if (!has_new_bits(G, G->virgin_crash)) return keeping;
 
       }
 
-      if (!G->unique_crashes) write_crash_readme();
+      if (!G->unique_crashes) write_crash_readme(G);
 
 #ifndef SIMPLE_FILES
 
       fn = alloc_printf("%s/crashes/id:%06llu,sig:%02u,%s", G->out_dir,
-                        G->unique_crashes, G->kill_signal, describe_op(0));
+                        G->unique_crashes, G->kill_signal, describe_op(G, 0));
 
 #else
 
@@ -3052,7 +3058,7 @@ static u8 save_if_interesting(char** argv, void* mem, u32 len, u8 fault) {
 /* When resuming, try to find the queue position to start from. This makes sense
    only when resuming, and when we can find the original fuzzer_stats. */
 
-static u32 find_start_position(void) {
+static u32 find_start_position(struct g* G) {
 
   static u8 tmp[4096]; /* Ought to be enough for anybody. */
 
@@ -3087,7 +3093,7 @@ static u32 find_start_position(void) {
    -t given, we don't want to keep auto-scaling the timeout over and over
    again to prevent it from growing due to random flukes. */
 
-static void find_timeout(void) {
+static void find_timeout(struct g* G) {
 
   static u8 tmp[4096]; /* Ought to be enough for anybody. */
 
@@ -3122,7 +3128,7 @@ static void find_timeout(void) {
 
 /* Update stats file for unattended monitoring. */
 
-static void write_stats_file(double bitmap_cvg, double eps) {
+static void write_stats_file(struct g* G, double bitmap_cvg, double eps) {
 
   static double last_bcvg, last_eps;
 
@@ -3192,7 +3198,7 @@ static void write_stats_file(double bitmap_cvg, double eps) {
 
 /* Update the plot file if there is a reason to. */
 
-static void maybe_update_plot_file(double bitmap_cvg, double eps) {
+static void maybe_update_plot_file(struct g* G, double bitmap_cvg, double eps) {
 
   static u32 prev_qp, prev_pf, prev_pnf, prev_ce, prev_md;
   static u64 prev_qc, prev_uc, prev_uh;
@@ -3316,7 +3322,7 @@ static double get_runnable_processes(void) {
 
 /* Delete the temporary directory used for in-place session resume. */
 
-static void nuke_resume_dir(void) {
+static void nuke_resume_dir(struct g* G) {
 
   u8* fn;
 
@@ -3356,7 +3362,7 @@ dir_cleanup_failed:
 /* Delete fuzzer output directory if we recognize it as ours, if the fuzzer
    is not currently running, and if the last run time isn't too great. */
 
-static void maybe_delete_out_dir(void) {
+static void maybe_delete_out_dir(struct g* G) {
 
   FILE* f;
   u8 *fn = alloc_printf("%s/fuzzer_stats", G->out_dir);
@@ -3595,13 +3601,13 @@ dir_cleanup_failed:
 }
 
 
-static void check_term_size(void);
+static void check_term_size(struct g* G);
 
 
 /* A spiffy retro stats screen! This is called every G->stats_update_freq
    execve() calls, plus in several other circumstances. */
 
-static void show_stats(void) {
+static void show_stats(struct g* G) {
 
   static u64 last_stats_ms, last_plot_ms, last_ms, last_execs;
   static double avg_exec;
@@ -3663,9 +3669,9 @@ static void show_stats(void) {
   if (cur_ms - last_stats_ms > STATS_UPDATE_SEC * 1000) {
 
     last_stats_ms = cur_ms;
-    write_stats_file(t_byte_ratio, avg_exec);
-    save_auto();
-    write_bitmap();
+    write_stats_file(G, t_byte_ratio, avg_exec);
+    save_auto(G);
+    write_bitmap(G);
 
   }
 
@@ -3674,7 +3680,7 @@ static void show_stats(void) {
   if (cur_ms - last_plot_ms > PLOT_UPDATE_SEC * 1000) {
 
     last_plot_ms = cur_ms;
-    maybe_update_plot_file(t_byte_ratio, avg_exec);
+    maybe_update_plot_file(G, t_byte_ratio, avg_exec);
  
   }
 
@@ -3698,7 +3704,7 @@ static void show_stats(void) {
     SAYF(TERM_CLEAR CURSOR_HIDE);
     G->clear_screen = 0;
 
-    check_term_size();
+    check_term_size(G);
 
   }
 
@@ -4040,7 +4046,7 @@ static void show_stats(void) {
    plus a bunch of warnings. Some calibration stuff also ended up here,
    along with several hardcoded constants. Maybe clean up eventually. */
 
-static void show_init_stats(void) {
+static void show_init_stats(struct g* G) {
 
   struct queue_entry* q = G->queue;
   u32 min_bits = 0, max_bits = 0;
@@ -4153,7 +4159,7 @@ static u32 next_p2(u32 val) {
    trimmer uses power-of-two increments somewhere between 1/16 and 1/1024 of
    file size, to keep the stage short and sweet. */
 
-static u8 trim_case(char** argv, struct queue_entry* q, u8* in_buf) {
+static u8 trim_case(struct g* G, char** argv, struct queue_entry* q, u8* in_buf) {
 
   static u8 tmp[64];
   static u8 clean_trace[MAP_SIZE];
@@ -4195,9 +4201,9 @@ static u8 trim_case(char** argv, struct queue_entry* q, u8* in_buf) {
       u32 trim_avail = MIN(remove_len, q->len - remove_pos);
       u32 cksum;
 
-      write_with_gap(in_buf, q->len, remove_pos, trim_avail);
+      write_with_gap(G, in_buf, q->len, remove_pos, trim_avail);
 
-      fault = run_target(argv);
+      fault = run_target(G, argv);
       G->trim_execs++;
 
       if (G->stop_soon || fault == FAULT_ERROR) goto abort_trimming;
@@ -4235,7 +4241,7 @@ static u8 trim_case(char** argv, struct queue_entry* q, u8* in_buf) {
 
       /* Since this can be slow, update the screen every now and then. */
 
-      if (!(trim_exec++ % G->stats_update_freq)) show_stats();
+      if (!(trim_exec++ % G->stats_update_freq)) show_stats(G);
       G->stage_cur++;
 
     }
@@ -4261,7 +4267,7 @@ static u8 trim_case(char** argv, struct queue_entry* q, u8* in_buf) {
     close(fd);
 
     memcpy(G->trace_bits, clean_trace, MAP_SIZE);
-    update_bitmap_score(q);
+    update_bitmap_score(G, q);
 
   }
 
@@ -4279,7 +4285,7 @@ abort_trimming:
    error conditions, returning 1 if it's time to bail out. This is
    a helper function for fuzz_one(). */
 
-static u8 common_fuzz_stuff(char** argv, u8* out_buf, u32 len) {
+static u8 common_fuzz_stuff(struct g* G, char** argv, u8* out_buf, u32 len) {
 
   u8 fault;
 
@@ -4290,9 +4296,9 @@ static u8 common_fuzz_stuff(char** argv, u8* out_buf, u32 len) {
 
   }
 
-  write_to_testcase(out_buf, len);
+  write_to_testcase(G, out_buf, len);
 
-  fault = run_target(argv);
+  fault = run_target(G, argv);
 
   if (G->stop_soon) return 1;
 
@@ -4318,10 +4324,10 @@ static u8 common_fuzz_stuff(char** argv, u8* out_buf, u32 len) {
 
   /* This handles FAULT_ERROR for us: */
 
-  G->queued_discovered += save_if_interesting(argv, out_buf, len, fault);
+  G->queued_discovered += save_if_interesting(G, argv, out_buf, len, fault);
 
   if (!(G->stage_cur % G->stats_update_freq) || G->stage_cur + 1 == G->stage_max)
-    show_stats();
+    show_stats(G);
 
   return 0;
 
@@ -4331,14 +4337,14 @@ static u8 common_fuzz_stuff(char** argv, u8* out_buf, u32 len) {
 /* Helper to choose random block len for block operations in fuzz_one().
    Doesn't return zero, provided that max_len is > 0. */
 
-static u32 choose_block_len(u32 limit) {
+static u32 choose_block_len(struct g* G, u32 limit) {
 
   u32 min_value, max_value;
   u32 rlim = MIN(G->queue_cycle, 3);
 
   if (!G->run_over10m) rlim = 1;
 
-  switch (UR(rlim)) {
+  switch (UR(G, rlim)) {
 
     case 0:  min_value = 1;
              max_value = HAVOC_BLK_SMALL;
@@ -4356,7 +4362,7 @@ static u32 choose_block_len(u32 limit) {
 
   if (min_value >= limit) min_value = 1;
 
-  return min_value + UR(MIN(max_value, limit) - min_value + 1);
+  return min_value + UR(G, MIN(max_value, limit) - min_value + 1);
 
 }
 
@@ -4365,7 +4371,7 @@ static u32 choose_block_len(u32 limit) {
    A helper function for fuzz_one(). Maybe some of these constants should
    go into config.h. */
 
-static u32 calculate_score(struct queue_entry* q) {
+static u32 calculate_score(struct g* G, struct queue_entry* q) {
 
   u32 avg_exec_us = G->total_cal_us / G->total_cal_cycles;
   u32 avg_bitmap_size = G->total_bitmap_size / G->total_bitmap_entries;
@@ -4622,7 +4628,7 @@ static u8 could_be_interest(u32 old_val, u32 new_val, u8 blen, u8 check_le) {
    function is a tad too long... returns 0 if fuzzed successfully, 1 if
    skipped or bailed out. */
 
-static u8 fuzz_one(char** argv) {
+static u8 fuzz_one(struct g* G, char** argv) {
 
   s32 len, fd, temp_len, i, j;
   u8  *in_buf, *out_buf, *orig_in, *ex_tmp, *eff_map = 0;
@@ -4650,7 +4656,7 @@ static u8 fuzz_one(char** argv) {
        cases. */
 
     if ((G->queue_cur->was_fuzzed || !G->queue_cur->favored) &&
-        UR(100) < SKIP_TO_NEW_PROB) return 1;
+        UR(G, 100) < SKIP_TO_NEW_PROB) return 1;
 
   } else if (!G->dumb_mode && !G->queue_cur->favored && G->queued_paths > 10) {
 
@@ -4660,11 +4666,11 @@ static u8 fuzz_one(char** argv) {
 
     if (G->queue_cycle > 1 && !G->queue_cur->was_fuzzed) {
 
-      if (UR(100) < SKIP_NFAV_NEW_PROB) return 1;
+      if (UR(G, 100) < SKIP_NFAV_NEW_PROB) return 1;
 
     } else {
 
-      if (UR(100) < SKIP_NFAV_OLD_PROB) return 1;
+      if (UR(G, 100) < SKIP_NFAV_OLD_PROB) return 1;
 
     }
 
@@ -4709,7 +4715,7 @@ static u8 fuzz_one(char** argv) {
 
     if (G->queue_cur->cal_failed < CAL_CHANCES) {
 
-      res = calibrate_case(argv, G->queue_cur, in_buf, G->queue_cycle - 1, 0);
+      res = calibrate_case(G, argv, G->queue_cur, in_buf, G->queue_cycle - 1, 0);
 
       if (res == FAULT_ERROR)
         FATAL("Unable to execute target application");
@@ -4729,7 +4735,7 @@ static u8 fuzz_one(char** argv) {
 
   if (!G->dumb_mode && !G->queue_cur->trim_done) {
 
-    u8 res = trim_case(argv, G->queue_cur, in_buf);
+    u8 res = trim_case(G, argv, G->queue_cur, in_buf);
 
     if (res == FAULT_ERROR)
       FATAL("Unable to execute target application");
@@ -4753,7 +4759,7 @@ static u8 fuzz_one(char** argv) {
    * PERFORMANCE SCORE *
    *********************/
 
-  orig_perf = perf_score = calculate_score(G->queue_cur);
+  orig_perf = perf_score = calculate_score(G, G->queue_cur);
 
   /* Skip right away if -d is given, if we have done deterministic fuzzing on
      this entry ourselves (was_fuzzed), or if it has gone through deterministic
@@ -4790,7 +4796,7 @@ static u8 fuzz_one(char** argv) {
 
     FLIP_BIT(out_buf, G->stage_cur);
 
-    if (common_fuzz_stuff(argv, out_buf, len)) goto abandon_entry;
+    if (common_fuzz_stuff(G, argv, out_buf, len)) goto abandon_entry;
 
     FLIP_BIT(out_buf, G->stage_cur);
 
@@ -4834,7 +4840,7 @@ static u8 fuzz_one(char** argv) {
         a_len++;
 
         if (a_len >= MIN_AUTO_EXTRA && a_len <= MAX_AUTO_EXTRA)
-          maybe_add_auto(a_collect, a_len);
+          maybe_add_auto(G, a_collect, a_len);
 
       } else if (cksum != prev_cksum) {
 
@@ -4842,7 +4848,7 @@ static u8 fuzz_one(char** argv) {
            worthwhile queued up, and collect that if the answer is yes. */
 
         if (a_len >= MIN_AUTO_EXTRA && a_len <= MAX_AUTO_EXTRA)
-          maybe_add_auto(a_collect, a_len);
+          maybe_add_auto(G, a_collect, a_len);
 
         a_len = 0;
         prev_cksum = cksum;
@@ -4885,7 +4891,7 @@ static u8 fuzz_one(char** argv) {
     FLIP_BIT(out_buf, G->stage_cur);
     FLIP_BIT(out_buf, G->stage_cur + 1);
 
-    if (common_fuzz_stuff(argv, out_buf, len)) goto abandon_entry;
+    if (common_fuzz_stuff(G, argv, out_buf, len)) goto abandon_entry;
 
     FLIP_BIT(out_buf, G->stage_cur);
     FLIP_BIT(out_buf, G->stage_cur + 1);
@@ -4914,7 +4920,7 @@ static u8 fuzz_one(char** argv) {
     FLIP_BIT(out_buf, G->stage_cur + 2);
     FLIP_BIT(out_buf, G->stage_cur + 3);
 
-    if (common_fuzz_stuff(argv, out_buf, len)) goto abandon_entry;
+    if (common_fuzz_stuff(G, argv, out_buf, len)) goto abandon_entry;
 
     FLIP_BIT(out_buf, G->stage_cur);
     FLIP_BIT(out_buf, G->stage_cur + 1);
@@ -4966,7 +4972,7 @@ static u8 fuzz_one(char** argv) {
 
     out_buf[G->stage_cur] ^= 0xFF;
 
-    if (common_fuzz_stuff(argv, out_buf, len)) goto abandon_entry;
+    if (common_fuzz_stuff(G, argv, out_buf, len)) goto abandon_entry;
 
     /* We also use this stage to pull off a simple trick: we identify
        bytes that seem to have no effect on the current execution path
@@ -5044,7 +5050,7 @@ static u8 fuzz_one(char** argv) {
 
     *(u16*)(out_buf + i) ^= 0xFFFF;
 
-    if (common_fuzz_stuff(argv, out_buf, len)) goto abandon_entry;
+    if (common_fuzz_stuff(G, argv, out_buf, len)) goto abandon_entry;
     G->stage_cur++;
 
     *(u16*)(out_buf + i) ^= 0xFFFF;
@@ -5081,7 +5087,7 @@ static u8 fuzz_one(char** argv) {
 
     *(u32*)(out_buf + i) ^= 0xFFFFFFFF;
 
-    if (common_fuzz_stuff(argv, out_buf, len)) goto abandon_entry;
+    if (common_fuzz_stuff(G, argv, out_buf, len)) goto abandon_entry;
     G->stage_cur++;
 
     *(u32*)(out_buf + i) ^= 0xFFFFFFFF;
@@ -5135,7 +5141,7 @@ skip_bitflip:
         G->stage_cur_val = j;
         out_buf[i] = orig + j;
 
-        if (common_fuzz_stuff(argv, out_buf, len)) goto abandon_entry;
+        if (common_fuzz_stuff(G, argv, out_buf, len)) goto abandon_entry;
         G->stage_cur++;
 
       } else G->stage_max--;
@@ -5147,7 +5153,7 @@ skip_bitflip:
         G->stage_cur_val = -j;
         out_buf[i] = orig - j;
 
-        if (common_fuzz_stuff(argv, out_buf, len)) goto abandon_entry;
+        if (common_fuzz_stuff(G, argv, out_buf, len)) goto abandon_entry;
         G->stage_cur++;
 
       } else G->stage_max--;
@@ -5206,7 +5212,7 @@ skip_bitflip:
         G->stage_cur_val = j;
         *(u16*)(out_buf + i) = orig + j;
 
-        if (common_fuzz_stuff(argv, out_buf, len)) goto abandon_entry;
+        if (common_fuzz_stuff(G, argv, out_buf, len)) goto abandon_entry;
         G->stage_cur++;
  
       } else G->stage_max--;
@@ -5216,7 +5222,7 @@ skip_bitflip:
         G->stage_cur_val = -j;
         *(u16*)(out_buf + i) = orig - j;
 
-        if (common_fuzz_stuff(argv, out_buf, len)) goto abandon_entry;
+        if (common_fuzz_stuff(G, argv, out_buf, len)) goto abandon_entry;
         G->stage_cur++;
 
       } else G->stage_max--;
@@ -5231,7 +5237,7 @@ skip_bitflip:
         G->stage_cur_val = j;
         *(u16*)(out_buf + i) = SWAP16(SWAP16(orig) + j);
 
-        if (common_fuzz_stuff(argv, out_buf, len)) goto abandon_entry;
+        if (common_fuzz_stuff(G, argv, out_buf, len)) goto abandon_entry;
         G->stage_cur++;
 
       } else G->stage_max--;
@@ -5241,7 +5247,7 @@ skip_bitflip:
         G->stage_cur_val = -j;
         *(u16*)(out_buf + i) = SWAP16(SWAP16(orig) - j);
 
-        if (common_fuzz_stuff(argv, out_buf, len)) goto abandon_entry;
+        if (common_fuzz_stuff(G, argv, out_buf, len)) goto abandon_entry;
         G->stage_cur++;
 
       } else G->stage_max--;
@@ -5299,7 +5305,7 @@ skip_bitflip:
         G->stage_cur_val = j;
         *(u32*)(out_buf + i) = orig + j;
 
-        if (common_fuzz_stuff(argv, out_buf, len)) goto abandon_entry;
+        if (common_fuzz_stuff(G, argv, out_buf, len)) goto abandon_entry;
         G->stage_cur++;
 
       } else G->stage_max--;
@@ -5309,7 +5315,7 @@ skip_bitflip:
         G->stage_cur_val = -j;
         *(u32*)(out_buf + i) = orig - j;
 
-        if (common_fuzz_stuff(argv, out_buf, len)) goto abandon_entry;
+        if (common_fuzz_stuff(G, argv, out_buf, len)) goto abandon_entry;
         G->stage_cur++;
 
       } else G->stage_max--;
@@ -5323,7 +5329,7 @@ skip_bitflip:
         G->stage_cur_val = j;
         *(u32*)(out_buf + i) = SWAP32(SWAP32(orig) + j);
 
-        if (common_fuzz_stuff(argv, out_buf, len)) goto abandon_entry;
+        if (common_fuzz_stuff(G, argv, out_buf, len)) goto abandon_entry;
         G->stage_cur++;
 
       } else G->stage_max--;
@@ -5333,7 +5339,7 @@ skip_bitflip:
         G->stage_cur_val = -j;
         *(u32*)(out_buf + i) = SWAP32(SWAP32(orig) - j);
 
-        if (common_fuzz_stuff(argv, out_buf, len)) goto abandon_entry;
+        if (common_fuzz_stuff(G, argv, out_buf, len)) goto abandon_entry;
         G->stage_cur++;
 
       } else G->stage_max--;
@@ -5392,7 +5398,7 @@ skip_arith:
       G->stage_cur_val = interesting_8[j];
       out_buf[i] = interesting_8[j];
 
-      if (common_fuzz_stuff(argv, out_buf, len)) goto abandon_entry;
+      if (common_fuzz_stuff(G, argv, out_buf, len)) goto abandon_entry;
 
       out_buf[i] = orig;
       G->stage_cur++;
@@ -5445,7 +5451,7 @@ skip_arith:
 
         *(u16*)(out_buf + i) = interesting_16[j];
 
-        if (common_fuzz_stuff(argv, out_buf, len)) goto abandon_entry;
+        if (common_fuzz_stuff(G, argv, out_buf, len)) goto abandon_entry;
         G->stage_cur++;
 
       } else G->stage_max--;
@@ -5458,7 +5464,7 @@ skip_arith:
         G->stage_val_type = STAGE_VAL_BE;
 
         *(u16*)(out_buf + i) = SWAP16(interesting_16[j]);
-        if (common_fuzz_stuff(argv, out_buf, len)) goto abandon_entry;
+        if (common_fuzz_stuff(G, argv, out_buf, len)) goto abandon_entry;
         G->stage_cur++;
 
       } else G->stage_max--;
@@ -5514,7 +5520,7 @@ skip_arith:
 
         *(u32*)(out_buf + i) = interesting_32[j];
 
-        if (common_fuzz_stuff(argv, out_buf, len)) goto abandon_entry;
+        if (common_fuzz_stuff(G, argv, out_buf, len)) goto abandon_entry;
         G->stage_cur++;
 
       } else G->stage_max--;
@@ -5527,7 +5533,7 @@ skip_arith:
         G->stage_val_type = STAGE_VAL_BE;
 
         *(u32*)(out_buf + i) = SWAP32(interesting_32[j]);
-        if (common_fuzz_stuff(argv, out_buf, len)) goto abandon_entry;
+        if (common_fuzz_stuff(G, argv, out_buf, len)) goto abandon_entry;
         G->stage_cur++;
 
       } else G->stage_max--;
@@ -5580,7 +5586,7 @@ skip_interest:
          is redundant, or if its entire span has no bytes set in the effector
          map. */
 
-      if ((G->extras_cnt > MAX_DET_EXTRAS && UR(G->extras_cnt) >= MAX_DET_EXTRAS) ||
+      if ((G->extras_cnt > MAX_DET_EXTRAS && UR(G, G->extras_cnt) >= MAX_DET_EXTRAS) ||
           G->extras[j].len > len - i ||
           !memcmp(G->extras[j].data, out_buf + i, G->extras[j].len) ||
           !memchr(eff_map + EFF_APOS(i), 1, EFF_SPAN_ALEN(i, G->extras[j].len))) {
@@ -5593,7 +5599,7 @@ skip_interest:
       last_len = G->extras[j].len;
       memcpy(out_buf + i, G->extras[j].data, last_len);
 
-      if (common_fuzz_stuff(argv, out_buf, len)) goto abandon_entry;
+      if (common_fuzz_stuff(G, argv, out_buf, len)) goto abandon_entry;
 
       G->stage_cur++;
 
@@ -5632,7 +5638,7 @@ skip_interest:
       /* Copy tail */
       memcpy(ex_tmp + i + G->extras[j].len, out_buf + i, len - i);
 
-      if (common_fuzz_stuff(argv, ex_tmp, len + G->extras[j].len)) {
+      if (common_fuzz_stuff(G, argv, ex_tmp, len + G->extras[j].len)) {
         ck_free(ex_tmp);
         goto abandon_entry;
       }
@@ -5688,7 +5694,7 @@ skip_user_extras:
       last_len = G->a_extras[j].len;
       memcpy(out_buf + i, G->a_extras[j].data, last_len);
 
-      if (common_fuzz_stuff(argv, out_buf, len)) goto abandon_entry;
+      if (common_fuzz_stuff(G, argv, out_buf, len)) goto abandon_entry;
 
       G->stage_cur++;
 
@@ -5710,7 +5716,7 @@ skip_extras:
      we're properly done with deterministic steps and can mark it as such
      in the .state/ directory. */
 
-  if (!G->queue_cur->passed_det) mark_as_det_done(G->queue_cur);
+  if (!G->queue_cur->passed_det) mark_as_det_done(G, G->queue_cur);
 
   /****************
    * RANDOM HAVOC *
@@ -5755,26 +5761,26 @@ havoc_stage:
 
   for (G->stage_cur = 0; G->stage_cur < G->stage_max; G->stage_cur++) {
 
-    u32 use_stacking = 1 << (1 + UR(HAVOC_STACK_POW2));
+    u32 use_stacking = 1 << (1 + UR(G, HAVOC_STACK_POW2));
 
     G->stage_cur_val = use_stacking;
  
     for (i = 0; i < use_stacking; i++) {
 
-      switch (UR(15 + ((G->extras_cnt + G->a_extras_cnt) ? 2 : 0))) {
+      switch (UR(G, 15 + ((G->extras_cnt + G->a_extras_cnt) ? 2 : 0))) {
 
         case 0:
 
           /* Flip a single bit somewhere. Spooky! */
 
-          FLIP_BIT(out_buf, UR(temp_len << 3));
+          FLIP_BIT(out_buf, UR(G, temp_len << 3));
           break;
 
         case 1: 
 
           /* Set byte to interesting value. */
 
-          out_buf[UR(temp_len)] = interesting_8[UR(sizeof(interesting_8))];
+          out_buf[UR(G, temp_len)] = interesting_8[UR(G, sizeof(interesting_8))];
           break;
 
         case 2:
@@ -5783,15 +5789,15 @@ havoc_stage:
 
           if (temp_len < 2) break;
 
-          if (UR(2)) {
+          if (UR(G, 2)) {
 
-            *(u16*)(out_buf + UR(temp_len - 1)) =
-              interesting_16[UR(sizeof(interesting_16) >> 1)];
+            *(u16*)(out_buf + UR(G, temp_len - 1)) =
+              interesting_16[UR(G, sizeof(interesting_16) >> 1)];
 
           } else {
 
-            *(u16*)(out_buf + UR(temp_len - 1)) = SWAP16(
-              interesting_16[UR(sizeof(interesting_16) >> 1)]);
+            *(u16*)(out_buf + UR(G, temp_len - 1)) = SWAP16(
+              interesting_16[UR(G, sizeof(interesting_16) >> 1)]);
 
           }
 
@@ -5803,15 +5809,15 @@ havoc_stage:
 
           if (temp_len < 4) break;
 
-          if (UR(2)) {
+          if (UR(G, 2)) {
   
-            *(u32*)(out_buf + UR(temp_len - 3)) =
-              interesting_32[UR(sizeof(interesting_32) >> 2)];
+            *(u32*)(out_buf + UR(G, temp_len - 3)) =
+              interesting_32[UR(G, sizeof(interesting_32) >> 2)];
 
           } else {
 
-            *(u32*)(out_buf + UR(temp_len - 3)) = SWAP32(
-              interesting_32[UR(sizeof(interesting_32) >> 2)]);
+            *(u32*)(out_buf + UR(G, temp_len - 3)) = SWAP32(
+              interesting_32[UR(G, sizeof(interesting_32) >> 2)]);
 
           }
 
@@ -5821,14 +5827,14 @@ havoc_stage:
 
           /* Randomly subtract from byte. */
 
-          out_buf[UR(temp_len)] -= 1 + UR(ARITH_MAX);
+          out_buf[UR(G, temp_len)] -= 1 + UR(G, ARITH_MAX);
           break;
 
         case 5:
 
           /* Randomly add to byte. */
 
-          out_buf[UR(temp_len)] += 1 + UR(ARITH_MAX);
+          out_buf[UR(G, temp_len)] += 1 + UR(G, ARITH_MAX);
           break;
 
         case 6:
@@ -5837,16 +5843,16 @@ havoc_stage:
 
           if (temp_len < 2) break;
 
-          if (UR(2)) {
+          if (UR(G, 2)) {
 
-            u32 pos = UR(temp_len - 1);
+            u32 pos = UR(G, temp_len - 1);
 
-            *(u16*)(out_buf + pos) -= 1 + UR(ARITH_MAX);
+            *(u16*)(out_buf + pos) -= 1 + UR(G, ARITH_MAX);
 
           } else {
 
-            u32 pos = UR(temp_len - 1);
-            u16 num = 1 + UR(ARITH_MAX);
+            u32 pos = UR(G, temp_len - 1);
+            u16 num = 1 + UR(G, ARITH_MAX);
 
             *(u16*)(out_buf + pos) =
               SWAP16(SWAP16(*(u16*)(out_buf + pos)) - num);
@@ -5861,16 +5867,16 @@ havoc_stage:
 
           if (temp_len < 2) break;
 
-          if (UR(2)) {
+          if (UR(G, 2)) {
 
-            u32 pos = UR(temp_len - 1);
+            u32 pos = UR(G, temp_len - 1);
 
-            *(u16*)(out_buf + pos) += 1 + UR(ARITH_MAX);
+            *(u16*)(out_buf + pos) += 1 + UR(G, ARITH_MAX);
 
           } else {
 
-            u32 pos = UR(temp_len - 1);
-            u16 num = 1 + UR(ARITH_MAX);
+            u32 pos = UR(G, temp_len - 1);
+            u16 num = 1 + UR(G, ARITH_MAX);
 
             *(u16*)(out_buf + pos) =
               SWAP16(SWAP16(*(u16*)(out_buf + pos)) + num);
@@ -5885,16 +5891,16 @@ havoc_stage:
 
           if (temp_len < 4) break;
 
-          if (UR(2)) {
+          if (UR(G, 2)) {
 
-            u32 pos = UR(temp_len - 3);
+            u32 pos = UR(G, temp_len - 3);
 
-            *(u32*)(out_buf + pos) -= 1 + UR(ARITH_MAX);
+            *(u32*)(out_buf + pos) -= 1 + UR(G, ARITH_MAX);
 
           } else {
 
-            u32 pos = UR(temp_len - 3);
-            u32 num = 1 + UR(ARITH_MAX);
+            u32 pos = UR(G, temp_len - 3);
+            u32 num = 1 + UR(G, ARITH_MAX);
 
             *(u32*)(out_buf + pos) =
               SWAP32(SWAP32(*(u32*)(out_buf + pos)) - num);
@@ -5909,16 +5915,16 @@ havoc_stage:
 
           if (temp_len < 4) break;
 
-          if (UR(2)) {
+          if (UR(G, 2)) {
 
-            u32 pos = UR(temp_len - 3);
+            u32 pos = UR(G, temp_len - 3);
 
-            *(u32*)(out_buf + pos) += 1 + UR(ARITH_MAX);
+            *(u32*)(out_buf + pos) += 1 + UR(G, ARITH_MAX);
 
           } else {
 
-            u32 pos = UR(temp_len - 3);
-            u32 num = 1 + UR(ARITH_MAX);
+            u32 pos = UR(G, temp_len - 3);
+            u32 num = 1 + UR(G, ARITH_MAX);
 
             *(u32*)(out_buf + pos) =
               SWAP32(SWAP32(*(u32*)(out_buf + pos)) + num);
@@ -5933,7 +5939,7 @@ havoc_stage:
              why not. We use XOR with 1-255 to eliminate the
              possibility of a no-op. */
 
-          out_buf[UR(temp_len)] ^= 1 + UR(255);
+          out_buf[UR(G, temp_len)] ^= 1 + UR(G, 255);
           break;
 
         case 11 ... 12: {
@@ -5948,9 +5954,9 @@ havoc_stage:
 
             /* Don't delete too much. */
 
-            del_len = choose_block_len(temp_len - 1);
+            del_len = choose_block_len(G, temp_len - 1);
 
-            del_from = UR(temp_len - del_len + 1);
+            del_from = UR(G, temp_len - del_len + 1);
 
             memmove(out_buf + del_from, out_buf + del_from + del_len,
                     temp_len - del_from - del_len);
@@ -5970,10 +5976,10 @@ havoc_stage:
             u32 clone_from, clone_to, clone_len;
             u8* new_buf;
 
-            clone_len  = choose_block_len(temp_len);
+            clone_len  = choose_block_len(G, temp_len);
 
-            clone_from = UR(temp_len - clone_len + 1);
-            clone_to   = UR(temp_len);
+            clone_from = UR(G, temp_len - clone_len + 1);
+            clone_to   = UR(G, temp_len);
 
             new_buf = ck_alloc_nozero(temp_len + clone_len);
 
@@ -5983,10 +5989,10 @@ havoc_stage:
 
             /* Inserted part */
 
-            if (UR(4))
+            if (UR(G, 4))
               memcpy(new_buf + clone_to, out_buf + clone_from, clone_len);
             else
-              memset(new_buf + clone_to, UR(256), clone_len);
+              memset(new_buf + clone_to, UR(G, 256), clone_len);
 
             /* Tail */
             memcpy(new_buf + clone_to + clone_len, out_buf + clone_to,
@@ -6009,17 +6015,17 @@ havoc_stage:
 
             if (temp_len < 2) break;
 
-            copy_len  = choose_block_len(temp_len - 1);
+            copy_len  = choose_block_len(G, temp_len - 1);
 
-            copy_from = UR(temp_len - copy_len + 1);
-            copy_to   = UR(temp_len - copy_len + 1);
+            copy_from = UR(G, temp_len - copy_len + 1);
+            copy_to   = UR(G, temp_len - copy_len + 1);
 
-            if (UR(4)) {
+            if (UR(G, 4)) {
 
               if (copy_from != copy_to)
                 memmove(out_buf + copy_to, out_buf + copy_from, copy_len);
 
-            } else memset(out_buf + copy_to, UR(256), copy_len);
+            } else memset(out_buf + copy_to, UR(G, 256), copy_len);
 
             break;
 
@@ -6032,31 +6038,31 @@ havoc_stage:
 
             /* Overwrite bytes with an extra. */
 
-            if (!G->extras_cnt || (G->a_extras_cnt && UR(2))) {
+            if (!G->extras_cnt || (G->a_extras_cnt && UR(G, 2))) {
 
               /* No user-specified G->extras or odds in our favor. Let's use an
                  auto-detected one. */
 
-              u32 use_extra = UR(G->a_extras_cnt);
+              u32 use_extra = UR(G, G->a_extras_cnt);
               u32 extra_len = G->a_extras[use_extra].len;
               u32 insert_at;
 
               if (extra_len > temp_len) break;
 
-              insert_at = UR(temp_len - extra_len + 1);
+              insert_at = UR(G, temp_len - extra_len + 1);
               memcpy(out_buf + insert_at, G->a_extras[use_extra].data, extra_len);
 
             } else {
 
               /* No auto G->extras or odds in our favor. Use the dictionary. */
 
-              u32 use_extra = UR(G->extras_cnt);
+              u32 use_extra = UR(G, G->extras_cnt);
               u32 extra_len = G->extras[use_extra].len;
               u32 insert_at;
 
               if (extra_len > temp_len) break;
 
-              insert_at = UR(temp_len - extra_len + 1);
+              insert_at = UR(G, temp_len - extra_len + 1);
               memcpy(out_buf + insert_at, G->extras[use_extra].data, extra_len);
 
             }
@@ -6067,15 +6073,15 @@ havoc_stage:
 
         case 17: {
 
-            u32 use_extra, extra_len, insert_at = UR(temp_len);
+            u32 use_extra, extra_len, insert_at = UR(G, temp_len);
             u8* new_buf;
 
             /* Insert an extra. Do the same dice-rolling stuff as for the
                previous case. */
 
-            if (!G->extras_cnt || (G->a_extras_cnt && UR(2))) {
+            if (!G->extras_cnt || (G->a_extras_cnt && UR(G, 2))) {
 
-              use_extra = UR(G->a_extras_cnt);
+              use_extra = UR(G, G->a_extras_cnt);
               extra_len = G->a_extras[use_extra].len;
 
               if (temp_len + extra_len >= MAX_FILE) break;
@@ -6090,7 +6096,7 @@ havoc_stage:
 
             } else {
 
-              use_extra = UR(G->extras_cnt);
+              use_extra = UR(G, G->extras_cnt);
               extra_len = G->extras[use_extra].len;
 
               if (temp_len + extra_len >= MAX_FILE) break;
@@ -6121,7 +6127,7 @@ havoc_stage:
 
     }
 
-    if (common_fuzz_stuff(argv, out_buf, temp_len))
+    if (common_fuzz_stuff(G, argv, out_buf, temp_len))
       goto abandon_entry;
 
     /* out_buf might have been mangled a bit, so let's restore it to its
@@ -6189,7 +6195,7 @@ retry_splicing:
 
     /* Pick a random queue entry and seek to it. Don't splice with yourself. */
 
-    do { tid = UR(G->queued_paths); } while (tid == G->current_entry);
+    do { tid = UR(G, G->queued_paths); } while (tid == G->current_entry);
 
     G->splicing_with = tid;
     target = G->queue;
@@ -6231,7 +6237,7 @@ retry_splicing:
 
     /* Split somewhere between the first and last differing byte. */
 
-    split_at = f_diff + UR(l_diff - f_diff);
+    split_at = f_diff + UR(G, l_diff - f_diff);
 
     /* Do the thing. */
 
@@ -6279,7 +6285,7 @@ abandon_entry:
 
 /* Grab interesting test cases from other fuzzers. */
 
-static void sync_fuzzers(char** argv) {
+static void sync_fuzzers(struct g* G, char** argv) {
 
   DIR* sd;
   struct dirent* sd_ent;
@@ -6374,19 +6380,19 @@ static void sync_fuzzers(char** argv) {
         /* See what happens. We rely on save_if_interesting() to catch major
            errors and save the test case. */
 
-        write_to_testcase(mem, st.st_size);
+        write_to_testcase(G, mem, st.st_size);
 
-        fault = run_target(argv);
+        fault = run_target(G, argv);
 
         if (G->stop_soon) return;
 
         G->syncing_party = sd_ent->d_name;
-        G->queued_imported += save_if_interesting(argv, mem, st.st_size, fault);
+        G->queued_imported += save_if_interesting(G, argv, mem, st.st_size, fault);
         G->syncing_party = 0;
 
         munmap(mem, st.st_size);
 
-        if (!(G->stage_cur++ % G->stats_update_freq)) show_stats();
+        if (!(G->stage_cur++ % G->stats_update_freq)) show_stats(G);
 
       }
 
@@ -6413,10 +6419,10 @@ static void sync_fuzzers(char** argv) {
 
 static void handle_stop_sig(int sig) {
 
-  G->stop_soon = 1; 
+  *stop_soon_ptr = 1;
 
-  if (G->child_pid > 0) kill(G->child_pid, SIGKILL);
-  if (G->forksrv_pid > 0) kill(G->forksrv_pid, SIGKILL);
+  if (*child_pid_ptr > 0) kill(*child_pid_ptr, SIGKILL);
+  if (*forksrv_pid_ptr > 0) kill(*forksrv_pid_ptr, SIGKILL);
 
 }
 
@@ -6425,7 +6431,7 @@ static void handle_stop_sig(int sig) {
 
 static void handle_skipreq(int sig) {
 
-  G->skip_requested = 1;
+  *skip_requested_ptr = 1;
 
 }
 
@@ -6433,15 +6439,15 @@ static void handle_skipreq(int sig) {
 
 static void handle_timeout(int sig) {
 
-  if (G->child_pid > 0) {
+  if (*child_pid_ptr > 0) {
 
-    G->child_timed_out = 1; 
-    kill(G->child_pid, SIGKILL);
+    *child_timed_out_ptr = 1; 
+    kill(*child_pid_ptr, SIGKILL);
 
-  } else if (G->child_pid == -1 && G->forksrv_pid > 0) {
+  } else if (*child_pid_ptr == -1 && *forksrv_pid_ptr > 0) {
 
-    G->child_timed_out = 1; 
-    kill(G->forksrv_pid, SIGKILL);
+    *child_timed_out_ptr = 1; 
+    kill(*forksrv_pid_ptr, SIGKILL);
 
   }
 
@@ -6452,7 +6458,7 @@ static void handle_timeout(int sig) {
    isn't a shell script - a common and painful mistake. We also check for
    a valid ELF header and for evidence of AFL instrumentation. */
 
-static void check_binary(u8* fname) {
+static void check_binary(struct g* G, u8* fname) {
 
   u8* env_path = 0;
   struct stat st;
@@ -6593,7 +6599,7 @@ static void check_binary(u8* fname) {
 
 /* Trim and possibly create a banner for the run. */
 
-static void fix_up_banner(u8* name) {
+static void fix_up_banner(struct g* G, u8* name) {
 
   if (!G->use_banner) {
 
@@ -6623,7 +6629,7 @@ static void fix_up_banner(u8* name) {
 
 /* Check if we're on TTY. */
 
-static void check_if_tty(void) {
+static void check_if_tty(struct g* G) {
 
   struct winsize ws;
 
@@ -6642,7 +6648,7 @@ static void check_if_tty(void) {
 
 /* Check terminal dimensions after resize. */
 
-static void check_term_size(void) {
+static void check_term_size(struct g* G) {
 
   struct winsize ws;
 
@@ -6658,7 +6664,7 @@ static void check_term_size(void) {
 
 /* Display usage hints. */
 
-static void usage(u8* argv0) {
+static void usage(struct g* G, u8* argv0) {
 
   SAYF("\n%s [ options ] -- /path/to/fuzzed_app [ ... ]\n\n"
 
@@ -6697,7 +6703,7 @@ static void usage(u8* argv0) {
 
 /* Prepare output directories and fds. */
 
-static void setup_dirs_fds(void) {
+static void setup_dirs_fds(struct g* G) {
 
   u8* tmp;
   s32 fd;
@@ -6711,7 +6717,7 @@ static void setup_dirs_fds(void) {
 
     if (errno != EEXIST) PFATAL("Unable to create '%s'", G->out_dir);
 
-    maybe_delete_out_dir();
+    maybe_delete_out_dir(G);
 
   } else {
 
@@ -6817,7 +6823,7 @@ static void setup_dirs_fds(void) {
 
 /* Setup the output file for fuzzed data, if not using -f. */
 
-static void setup_stdio_file(void) {
+static void setup_stdio_file(struct g* G) {
 
   u8* fn = alloc_printf("%s/.cur_input", G->out_dir);
 
@@ -6954,7 +6960,7 @@ static void check_cpu_governor(void) {
 
 /* Count the number of logical CPU cores. */
 
-static void get_core_count(void) {
+static void get_core_count(struct g* G) {
 
   u32 cur_runnable = 0;
 
@@ -7030,7 +7036,7 @@ static void get_core_count(void) {
 
 /* Validate and fix up G->out_dir and G->sync_dir when using -S. */
 
-static void fix_up_sync(void) {
+static void fix_up_sync(struct g* G) {
 
   u8* x = G->sync_id;
 
@@ -7073,7 +7079,7 @@ static void fix_up_sync(void) {
 /* Handle screen resize (SIGWINCH). */
 
 static void handle_resize(int sig) {
-  G->clear_screen = 1;
+  *clear_screen_ptr = 1;
 }
 
 
@@ -7096,7 +7102,7 @@ static void check_asan_opts(void) {
 
 /* Detect @@ in args. */
 
-static void detect_file_args(char** argv) {
+static void detect_file_args(struct g* G, char** argv) {
 
   u32 i = 0;
   u8* cwd = getcwd(NULL, 0);
@@ -7145,9 +7151,16 @@ static void detect_file_args(char** argv) {
    Solaris doesn't resume interrupted reads(), sets SA_RESETHAND when you call
    siginterrupt(), and does other stupid things. */
 
-static void setup_signal_handlers(void) {
+static void setup_signal_handlers(struct g* G) {
 
   struct sigaction sa;
+
+  child_pid_ptr = &G->child_pid;
+  forksrv_pid_ptr = &G->forksrv_pid;
+  stop_soon_ptr = &G->stop_soon;
+  skip_requested_ptr = &G->skip_requested;
+  child_timed_out_ptr = &G->child_timed_out;
+  clear_screen_ptr = &G->clear_screen;
 
   sa.sa_handler   = NULL;
   sa.sa_flags     = SA_RESTART;
@@ -7188,7 +7201,7 @@ static void setup_signal_handlers(void) {
 
 /* Rewrite argv for QEMU. */
 
-static char** get_qemu_argv(u8* own_loc, char** argv, int argc) {
+static char** get_qemu_argv(struct g* G, u8* own_loc, char** argv, int argc) {
 
   char** new_argv = ck_alloc(sizeof(char*) * (argc + 4));
   u8 *tmp, *cp, *rsl, *own_copy;
@@ -7257,7 +7270,7 @@ static char** get_qemu_argv(u8* own_loc, char** argv, int argc) {
 
 /* Make a copy of the current command line. */
 
-static void save_cmdline(u32 argc, char** argv) {
+static void save_cmdline(struct g* G, u32 argc, char** argv) {
 
   u32 len = 1, i;
   u8* buf;
@@ -7287,6 +7300,8 @@ static void save_cmdline(u32 argc, char** argv) {
 
 int main(int argc, char** argv) {
 
+  struct g* G = ck_alloc(sizeof(*G));
+
   s32 opt;
   u64 prev_queued = 0;
   u32 sync_interval_cnt = 0, seek_to;
@@ -7295,7 +7310,7 @@ int main(int argc, char** argv) {
 
   char** use_argv;
 
-  init_G();
+  init_G(G);
 
   SAYF(cCYA "afl-fuzz " cBRI VERSION cRST " by <lcamtuf@google.com>\n");
 
@@ -7420,7 +7435,7 @@ int main(int argc, char** argv) {
         if (G->in_bitmap) FATAL("Multiple -B options not supported");
 
         G->in_bitmap = optarg;
-        read_bitmap(G->in_bitmap);
+        read_bitmap(G, G->in_bitmap);
         break;
 
       case 'C':
@@ -7453,16 +7468,16 @@ int main(int argc, char** argv) {
 
       default:
 
-        usage(argv[0]);
+        usage(G, argv[0]);
 
     }
 
-  if (optind == argc || !G->in_dir || !G->out_dir) usage(argv[0]);
+  if (optind == argc || !G->in_dir || !G->out_dir) usage(G, argv[0]);
 
-  setup_signal_handlers();
+  setup_signal_handlers(G);
   check_asan_opts();
 
-  if (G->sync_id) fix_up_sync();
+  if (G->sync_id) fix_up_sync(G);
 
   if (!strcmp(G->in_dir, G->out_dir))
     FATAL("Input and output directories can't be the same");
@@ -7483,52 +7498,52 @@ int main(int argc, char** argv) {
   if (G->dumb_mode == 2 && G->no_forkserver)
     FATAL("AFL_DUMB_FORKSRV and AFL_NO_FORKSRV are mutually exclusive");
 
-  save_cmdline(argc, argv);
+  save_cmdline(G, argc, argv);
 
-  fix_up_banner(argv[optind]);
+  fix_up_banner(G, argv[optind]);
 
-  check_if_tty();
+  check_if_tty(G);
 
-  get_core_count();
+  get_core_count(G);
   check_crash_handling();
   check_cpu_governor();
 
-  setup_post();
-  setup_shm();
+  setup_post(G);
+  setup_shm(G);
 
-  setup_dirs_fds();
-  read_testcases();
-  load_auto();
+  setup_dirs_fds(G);
+  read_testcases(G);
+  load_auto(G);
 
-  pivot_inputs();
+  pivot_inputs(G);
 
-  if (extras_dir) load_extras(extras_dir);
+  if (extras_dir) load_extras(G, extras_dir);
 
-  if (!G->timeout_given) find_timeout();
+  if (!G->timeout_given) find_timeout(G);
 
-  detect_file_args(argv + optind + 1);
+  detect_file_args(G, argv + optind + 1);
 
-  if (!G->out_file) setup_stdio_file();
+  if (!G->out_file) setup_stdio_file(G);
 
-  check_binary(argv[optind]);
+  check_binary(G, argv[optind]);
 
   G->start_time = get_cur_time();
 
   if (G->qemu_mode)
-    use_argv = get_qemu_argv(argv[0], argv + optind, argc - optind);
+    use_argv = get_qemu_argv(G, argv[0], argv + optind, argc - optind);
   else
     use_argv = argv + optind;
 
-  perform_dry_run(use_argv);
+  perform_dry_run(G, use_argv);
 
-  cull_queue();
+  cull_queue(G);
 
-  show_init_stats();
+  show_init_stats(G);
 
-  seek_to = find_start_position();
+  seek_to = find_start_position(G);
 
-  write_stats_file(0, 0);
-  save_auto();
+  write_stats_file(G, 0, 0);
+  save_auto(G);
 
   if (G->stop_soon) goto stop_fuzzing;
 
@@ -7544,7 +7559,7 @@ int main(int argc, char** argv) {
 
     u8 skipped_fuzz;
 
-    cull_queue();
+    cull_queue(G);
 
     if (!G->queue_cur) {
 
@@ -7559,7 +7574,7 @@ int main(int argc, char** argv) {
         G->queue_cur = G->queue_cur->next;
       }
 
-      show_stats();
+      show_stats(G);
 
       if (G->not_on_tty) {
         ACTF("Entering queue cycle %llu.", G->queue_cycle);
@@ -7578,16 +7593,16 @@ int main(int argc, char** argv) {
       prev_queued = G->queued_paths;
 
       if (G->sync_id && G->queue_cycle == 1 && getenv("AFL_IMPORT_FIRST"))
-        sync_fuzzers(use_argv);
+        sync_fuzzers(G, use_argv);
 
     }
 
-    skipped_fuzz = fuzz_one(use_argv);
+    skipped_fuzz = fuzz_one(G, use_argv);
 
     if (!G->stop_soon && G->sync_id && !skipped_fuzz) {
       
       if (!(sync_interval_cnt++ % SYNC_INTERVAL))
-        sync_fuzzers(use_argv);
+        sync_fuzzers(G, use_argv);
 
     }
 
@@ -7598,11 +7613,11 @@ int main(int argc, char** argv) {
 
   }
 
-  if (G->queue_cur) show_stats();
+  if (G->queue_cur) show_stats(G);
 
-  write_bitmap();
-  write_stats_file(0, 0);
-  save_auto();
+  write_bitmap(G);
+  write_stats_file(G, 0, 0);
+  save_auto(G);
 
 stop_fuzzing:
 
@@ -7619,8 +7634,8 @@ stop_fuzzing:
   }
 
   fclose(G->plot_file);
-  destroy_queue();
-  destroy_extras();
+  destroy_queue(G);
+  destroy_extras(G);
   ck_free(G->target_path);
 
   alloc_report();

@@ -7,6 +7,96 @@
 #include <string.h>
 #include <sys/time.h>
 
+/* Count the number of bits set in the provided bitmap. Used for the status
+   screen several times every second, does not have to be fast. */
+
+u32 count_bits(const u8* mem) {
+
+  u32* ptr = (u32*)mem;
+  u32  i   = (MAP_SIZE >> 2);
+  u32  ret = 0;
+
+  while (i--) {
+
+    u32 v = *(ptr++);
+
+    /* This gets called on the inverse, virgin bitmap; optimize for sparse
+       data. */
+
+    if (v == 0xffffffff) {
+      ret += 32;
+      continue;
+    }
+
+    v -= ((v >> 1) & 0x55555555);
+    v = (v & 0x33333333) + ((v >> 2) & 0x33333333);
+    ret += (((v + (v >> 4)) & 0xF0F0F0F) * 0x01010101) >> 24;
+
+  }
+
+  return ret;
+
+}
+
+
+/* Count the number of bytes set in the bitmap. Called fairly sporadically,
+   mostly to update the status screen or calibrate and examine confirmed
+   new paths. */
+
+u32 count_bytes(const u8* mem) {
+
+  u32* ptr = (u32*)mem;
+  u32  i   = (MAP_SIZE >> 2);
+  u32  ret = 0;
+
+  while (i--) {
+
+    u32 v = *(ptr++);
+
+    if (!v) continue;
+    if (v & FF(0)) ret++;
+    if (v & FF(1)) ret++;
+    if (v & FF(2)) ret++;
+    if (v & FF(3)) ret++;
+
+  }
+
+  return ret;
+
+}
+
+
+/* Count the number of non-255 bytes set in the bitmap. Used strictly for the
+   status screen, several calls per second or so. */
+
+u32 count_non_255_bytes(const u8* mem) {
+
+  u32* ptr = (u32*)mem;
+  u32  i   = (MAP_SIZE >> 2);
+  u32  ret = 0;
+
+  while (i--) {
+
+    u32 v = *(ptr++);
+
+    /* This is called on the virgin bitmap, so optimize for the most likely
+       case. */
+
+    if (v == 0xffffffff) continue;
+    if ((v & FF(0)) != FF(0)) ret++;
+    if ((v & FF(1)) != FF(1)) ret++;
+    if ((v & FF(2)) != FF(2)) ret++;
+    if ((v & FF(3)) != FF(3)) ret++;
+
+  }
+
+  return ret;
+
+}
+
+
+
+
 /* Get unix time in milliseconds */
 
 u64 get_cur_time(void) {

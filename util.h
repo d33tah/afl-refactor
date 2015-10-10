@@ -8,11 +8,16 @@ u64 get_cur_time_us(void);
 u8* DF(double val);
 u8* DMS(u64 val);
 u8* DTD(u64 cur_ms, u64 event_ms);
-
+u32 count_bits(const u8* mem);
+u32 count_bytes(const u8* mem);
+u32 count_non_255_bytes(const u8* mem);
 
 u8* DI(u64 val);
 inline u32 UR(struct g* G, u32 limit);
 u32 next_p2(u32 val);
+
+#define FFL(_b) (0xffULL << ((_b) << 3))
+#define FF(_b)  (0xff << ((_b) << 3))
 
 #define AREP4(_sym)   (_sym), (_sym), (_sym), (_sym)
 #define AREP8(_sym)   AREP4(_sym), AREP4(_sym)

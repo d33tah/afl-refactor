@@ -57,6 +57,100 @@ void setup_shm(struct g* G) {
 
 }
 
+/* Destructively simplify trace by eliminating hit count information
+   and replacing it with 0x80 or 0x01 depending on whether the tuple
+   is hit or not. Called on every new crash or hang, should be
+   reasonably fast. */
+
+static u8 simplify_lookup[256] = { 
+  /*    4 */ 1, 128, 128, 128,
+  /*   +4 */ AREP4(128),
+  /*   +8 */ AREP8(128),
+  /*  +16 */ AREP16(128),
+  /*  +32 */ AREP32(128),
+  /*  +64 */ AREP64(128),
+  /* +128 */ AREP128(128)
+};
+
+#ifdef __x86_64__
+
+void simplify_trace(u64* mem) {
+
+  u32 i = MAP_SIZE >> 3;
+
+  while (i--) {
+
+    /* Optimize for sparse bitmaps. */
+
+    if (*mem) {
+
+      u8* mem8 = (u8*)mem;
+
+      mem8[0] = simplify_lookup[mem8[0]];
+      mem8[1] = simplify_lookup[mem8[1]];
+      mem8[2] = simplify_lookup[mem8[2]];
+      mem8[3] = simplify_lookup[mem8[3]];
+      mem8[4] = simplify_lookup[mem8[4]];
+      mem8[5] = simplify_lookup[mem8[5]];
+      mem8[6] = simplify_lookup[mem8[6]];
+      mem8[7] = simplify_lookup[mem8[7]];
+
+    } else *mem = 0x0101010101010101ULL;
+
+    mem++;
+
+  }
+
+}
+
+#else
+
+static void simplify_trace(u32* mem) {
+
+  u32 i = MAP_SIZE >> 2;
+
+  while (i--) {
+
+    /* Optimize for sparse bitmaps. */
+
+    if (*mem) {
+
+      u8* mem8 = (u8*)mem;
+
+      mem8[0] = simplify_lookup[mem8[0]];
+      mem8[1] = simplify_lookup[mem8[1]];
+      mem8[2] = simplify_lookup[mem8[2]];
+      mem8[3] = simplify_lookup[mem8[3]];
+
+    } else *mem = 0x01010101;
+
+    mem++;
+  }
+
+}
+
+#endif /* ^__x86_64__ */
+
+
+
+/* Compact trace bytes into a smaller bitmap. We effectively just drop the
+   count information here. This is called only sporadically, for some
+   new paths. */
+
+static void minimize_bits(u8* dst, const u8* src) {
+
+  u32 i = 0;
+
+  while (i < MAP_SIZE) {
+
+    if (*(src++)) dst[i >> 3] |= 1 << (i & 7);
+    i++;
+
+  }
+
+}
+
+
 /* Destructively classify execution counts in a trace. This is used as a
    preprocessing step for any newly acquired traces. Called on every exec,
    must be fast. */
@@ -133,6 +227,61 @@ static inline void classify_counts(u32* mem) {
 #endif /* ^__x86_64__ */
 
 
+/* When we bump into a new path, we call this to see if the path appears
+   more "favorable" than any of the existing ones. The purpose of the
+   "favorables" is to have a minimal set of paths that trigger all the bits
+   seen in the bitmap so far, and focus on fuzzing them at the expense of
+   the rest.
+
+   The first step of the process is to maintain a list of G->top_rated[] entries
+   for every byte in the bitmap. We win that slot if there is no previous
+   contender, or if the contender has a more favorable speed x size factor. */
+
+void update_bitmap_score(const u8 *trace_bits, struct queue_entry* q,
+                         struct queue_entry* top_rated[MAP_SIZE],
+                         u8 *score_changed) {
+
+  u32 i;
+  u64 fav_factor = q->exec_us * q->len;
+
+  /* For every byte set in G->trace_bits[], see if there is a previous winner,
+     and how it compares to us. */
+
+  for (i = 0; i < MAP_SIZE; i++)
+
+    if (trace_bits[i]) {
+
+       if (top_rated[i]) {
+
+         /* Faster-executing or smaller test cases are favored. */
+
+         if (fav_factor > top_rated[i]->exec_us * top_rated[i]->len) continue;
+
+         /* Looks like we're going to win. Decrease ref count for the
+            previous winner, discard its G->trace_bits[] if necessary. */
+
+         if (!--top_rated[i]->tc_ref) {
+           ck_free(top_rated[i]->trace_mini);
+           top_rated[i]->trace_mini = 0;
+         }
+
+       }
+
+       /* Insert ourselves as the new winner. */
+
+       top_rated[i] = q;
+       q->tc_ref++;
+
+       if (!q->trace_mini) {
+         q->trace_mini = ck_alloc(MAP_SIZE >> 3);
+         minimize_bits(q->trace_mini, trace_bits);
+       }
+
+       *score_changed = 1;
+
+     }
+
+}
 
 
 /* Execute target application, monitoring for timeouts. Return status

@@ -1,6 +1,7 @@
 #include "shm-instr.h"
 #include "debug.h"
 #include "util.h"
+#include "alloc-inl.h"
 
 #include <string.h>
 #include <unistd.h>
@@ -8,6 +9,53 @@
 #include <sys/resource.h>
 #include <sys/types.h>
 #include <sys/wait.h>
+#include <sys/shm.h>
+
+static s32 *shm_id_ptr;
+
+/* Get rid of shared memory (atexit handler). */
+
+static void remove_shm(void) {
+
+  shmctl(*shm_id_ptr, IPC_RMID, NULL);
+
+}
+
+/* Configure shared memory and G->virgin_bits. This is called at startup. */
+
+void setup_shm(struct g* G) {
+
+  u8* shm_str;
+
+  if (!G->in_bitmap) memset(G->virgin_bits, 255, MAP_SIZE);
+
+  memset(G->virgin_hang, 255, MAP_SIZE);
+  memset(G->virgin_crash, 255, MAP_SIZE);
+
+  G->shm_id = shmget(IPC_PRIVATE, MAP_SIZE, IPC_CREAT | IPC_EXCL | 0600);
+
+  if (G->shm_id < 0) PFATAL("shmget() failed");
+
+  shm_id_ptr = &G->shm_id;
+  atexit(remove_shm);
+
+  shm_str = alloc_printf("%d", G->shm_id);
+
+  /* If somebody is asking us to fuzz instrumented binaries in dumb mode,
+     we don't want them to detect instrumentation, since we won't be sending
+     fork server commands. This should be replaced with better auto-detection
+     later on, perhaps? */
+
+  if (G->dumb_mode != 1)
+    setenv(SHM_ENV_VAR, shm_str, 1);
+
+  ck_free(shm_str);
+
+  G->trace_bits = shmat(G->shm_id, NULL, 0);
+  
+  if (!G->trace_bits) PFATAL("shmat() failed");
+
+}
 
 /* Destructively classify execution counts in a trace. This is used as a
    preprocessing step for any newly acquired traces. Called on every exec,

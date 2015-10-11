@@ -137,7 +137,7 @@ void mark_as_variable(const struct g* G, struct queue_entry* q) {
 /* Mark / unmark as redundant (edge-only). This is not used for restoring state,
    but may be useful for post-processing datasets. */
 
-static void mark_as_redundant(struct g* G, struct queue_entry* q, u8 state) {
+static void mark_as_redundant(const struct g* G, struct queue_entry* q, u8 state) {
 
   u8* fn;
   s32 fd;
@@ -247,13 +247,13 @@ static void write_bitmap(const struct g* G, u8 *bitmap_changed) {
 
 /* Read bitmap from file. This is for the -B option again. */
 
-static void read_bitmap(struct g* G, u8* fname) {
+static void read_bitmap(const struct g* G, u8* fname, u8 *virgin_bits) {
 
   s32 fd = open(fname, O_RDONLY);
 
   if (fd < 0) PFATAL("Unable to open '%s'", fname);
 
-  ck_read(fd, G->virgin_bits, MAP_SIZE, fname);
+  ck_read(fd, virgin_bits, MAP_SIZE, fname);
 
   close(fd);
 
@@ -321,7 +321,7 @@ static void cull_queue(struct g* G) {
 
 /* Load postprocessor, if available. */
 
-static void setup_post(struct g* G) {
+static void setup_post(post_handler_t* post_handler) {
 
   void* dh;
   u8* fn = getenv("AFL_POST_LIBRARY");
@@ -334,12 +334,12 @@ static void setup_post(struct g* G) {
   dh = dlopen(fn, RTLD_NOW);
   if (!dh) FATAL("%s", dlerror());
 
-  G->post_handler = dlsym(dh, "afl_postprocess");
-  if (!G->post_handler) FATAL("Symbol 'afl_postprocess' not found.");
+  *post_handler = dlsym(dh, "afl_postprocess");
+  if (!*post_handler) FATAL("Symbol 'afl_postprocess' not found.");
 
   /* Do a quick test. It's better to segfault now than later =) */
 
-  G->post_handler("hello", &tlen);
+  (*post_handler)("hello", &tlen);
 
   OKF("Postprocessor installed successfully.");
 
@@ -455,8 +455,9 @@ int compare_extras_len(const void* p1, const void* p2) {
 
 /* Read G->extras from a file, sort by size. */
 
-static void load_extras_file(struct g* G, u8* fname, u32* min_len,
-                             u32* max_len, u32 dict_level) {
+static void load_extras_file(u8* fname, u32* min_len,
+                             u32* max_len, u32 dict_level, u32* extras_cnt,
+							 struct extra_data* extras) {
 
   FILE* f;
   u8  buf[MAX_LINE];
@@ -526,10 +527,10 @@ static void load_extras_file(struct g* G, u8* fname, u32* min_len,
     /* Okay, let's allocate memory and copy data between "...", handling
        \xNN escaping, \\, and \". */
 
-    G->extras = ck_realloc_block(G->extras, (G->extras_cnt + 1) *
+    extras = ck_realloc_block(extras, (*extras_cnt + 1) *
                sizeof(struct extra_data));
 
-    wptr = G->extras[G->extras_cnt].data = ck_alloc(rptr - lptr);
+    wptr = extras[*extras_cnt].data = ck_alloc(rptr - lptr);
 
     while (*lptr) {
 
@@ -572,16 +573,16 @@ static void load_extras_file(struct g* G, u8* fname, u32* min_len,
 
     }
 
-    G->extras[G->extras_cnt].len = klen;
+    extras[*extras_cnt].len = klen;
 
-    if (G->extras[G->extras_cnt].len > MAX_DICT_FILE)
+    if (extras[*extras_cnt].len > MAX_DICT_FILE)
       FATAL("Keyword too big in line %u (%s, limit is %s)", cur_line,
             DMS(klen), DMS(MAX_DICT_FILE));
 
     if (*min_len > klen) *min_len = klen;
     if (*max_len < klen) *max_len = klen;
 
-    G->extras_cnt++;
+    (*extras_cnt)++;
 
   }
 
@@ -615,7 +616,8 @@ static void load_extras(struct g* G, u8* dir) {
   if (!d) {
 
     if (errno == ENOTDIR) {
-      load_extras_file(G, dir, &min_len, &max_len, dict_level);
+      load_extras_file(dir, &min_len, &max_len, dict_level, &G->extras_cnt,
+    		           G->extras);
       goto check_and_sort;
     }
 
@@ -763,7 +765,7 @@ static void load_auto(struct g* G) {
 
 /* Destroy G->extras. */
 
-static void destroy_extras(struct g* G) {
+static void destroy_extras(const struct g* G) {
 
   u32 i;
 
@@ -788,7 +790,7 @@ static void destroy_extras(struct g* G) {
    is unlinked and a new one is created. Otherwise, G->out_fd is rewound and
    truncated. */
 
-void write_to_testcase(struct g* G, void* mem, u32 len) {
+void write_to_testcase(const struct g* G, void* mem, u32 len) {
 
   s32 fd = G->out_fd;
 
@@ -816,7 +818,7 @@ void write_to_testcase(struct g* G, void* mem, u32 len) {
 
 /* Examine map coverage. Called once, for first test case. */
 
-static void check_map_coverage(struct g* G) {
+static void check_map_coverage(const struct g* G) {
 
   u32 i;
 
@@ -833,7 +835,8 @@ static void check_map_coverage(struct g* G) {
 /* Perform dry run of all test cases to confirm that the app is working as
    expected. This is done only for the initial inputs, and only once. */
 
-static void perform_dry_run(struct g* G, char** argv) {
+static void perform_dry_run(struct g* G, char** argv,
+		                    u32 *useless_at_start) {
 
   struct queue_entry* q = G->queue;
   u32 cal_failures = 0;
@@ -1000,7 +1003,7 @@ static void perform_dry_run(struct g* G, char** argv) {
 
       case FAULT_NOBITS: 
 
-        G->useless_at_start++;
+        (*useless_at_start)++;
 
         if (!G->in_bitmap)
           WARNF("No new instrumentation output, test case may be useless.");
@@ -1037,7 +1040,7 @@ static void perform_dry_run(struct g* G, char** argv) {
 
 /* Helper function: link() if possible, copy otherwise. */
 
-static void link_or_copy(u8* old_path, u8* new_path) {
+static void link_or_copy(const u8* old_path, const u8* new_path) {
 
   s32 i = link(old_path, new_path);
   s32 sfd, dfd;
@@ -1065,12 +1068,12 @@ static void link_or_copy(u8* old_path, u8* new_path) {
 }
 
 
-static void nuke_resume_dir(struct g* G);
+static void nuke_resume_dir(const struct g* G);
 
 /* Create hard links for input test cases in the output directory, choosing
    good names and pivoting accordingly. */
 
-static void pivot_inputs(struct g* G) {
+static void pivot_inputs(const struct g* G, u8 *resuming_fuzz, u32 *max_depth) {
 
   struct queue_entry* q = G->queue;
   u32 id = 0;
@@ -1100,7 +1103,7 @@ static void pivot_inputs(struct g* G) {
       u8* src_str;
       u32 src_id;
 
-      G->resuming_fuzz = 1;
+      *resuming_fuzz = 1;
       nfn = alloc_printf("%s/queue/%s", G->out_dir, rsl);
 
       /* Since we're at it, let's also try to find parent and figure out the
@@ -1114,7 +1117,7 @@ static void pivot_inputs(struct g* G) {
         while (src_id-- && s) s = s->next;
         if (s) q->depth = s->depth + 1;
 
-        if (G->max_depth < q->depth) G->max_depth = q->depth;
+        if (*max_depth < q->depth) *max_depth = q->depth;
 
       }
 
@@ -1163,7 +1166,7 @@ static void pivot_inputs(struct g* G) {
 /* Construct a file name for a new test case, capturing the operation
    that led to its discovery. Uses a static buffer. */
 
-static u8* describe_op(struct g* G, u8 hnb) {
+static u8* describe_op(const struct g* G, u8 hnb) {
 
   static u8 ret[256];
 
@@ -1204,7 +1207,7 @@ static u8* describe_op(struct g* G, u8 hnb) {
 
 /* Write a message accompanying the crash directory :-) */
 
-static void write_crash_readme(struct g* G) {
+static void write_crash_readme(const struct g* G) {
 
   u8* fn = alloc_printf("%s/crashes/README.txt", G->out_dir);
   s32 fd;
@@ -1421,7 +1424,7 @@ u8 save_if_interesting(struct g* G, char** argv, void* mem, u32 len,
 /* When resuming, try to find the queue position to start from. This makes sense
    only when resuming, and when we can find the original fuzzer_stats. */
 
-static u32 find_start_position(struct g* G) {
+static u32 find_start_position(const struct g* G) {
 
   static u8 tmp[4096]; /* Ought to be enough for anybody. */
 
@@ -1456,7 +1459,8 @@ static u32 find_start_position(struct g* G) {
    -t given, we don't want to keep auto-scaling the timeout over and over
    again to prevent it from growing due to random flukes. */
 
-static void find_timeout(struct g* G) {
+static void find_timeout(const struct g* G, u32 *exec_tmout,
+		                 u8 *timeout_given) {
 
   static u8 tmp[4096]; /* Ought to be enough for anybody. */
 
@@ -1483,8 +1487,8 @@ static void find_timeout(struct g* G) {
   ret = atoi(off + 17);
   if (ret <= 4) return;
 
-  G->exec_tmout = ret;
-  G->timeout_given = 3;
+  *exec_tmout = ret;
+  *timeout_given = 3;
 
 }
 
@@ -1601,7 +1605,7 @@ static void maybe_update_plot_file(const struct g* G, double bitmap_cvg, double 
 /* A helper function for maybe_delete_out_dir(), deleting all prefixed
    files in a directory. */
 
-static u8 delete_files(u8* path, u8* prefix) {
+static u8 delete_files(const u8* path, const u8* prefix) {
 
   DIR* d;
   struct dirent* d_ent;
@@ -1633,7 +1637,7 @@ static u8 delete_files(u8* path, u8* prefix) {
 
 /* Delete the temporary directory used for in-place session resume. */
 
-static void nuke_resume_dir(struct g* G) {
+static void nuke_resume_dir(const struct g* G) {
 
   u8* fn;
 
@@ -1673,7 +1677,8 @@ dir_cleanup_failed:
 /* Delete fuzzer output directory if we recognize it as ours, if the fuzzer
    is not currently running, and if the last run time isn't too great. */
 
-static void maybe_delete_out_dir(struct g* G) {
+static void maybe_delete_out_dir(const struct g* G, u32 *out_dir_fd,
+		                         u8 *in_dir) {
 
   FILE* f;
   u8 *fn = alloc_printf("%s/fuzzer_stats", G->out_dir);
@@ -1682,8 +1687,8 @@ static void maybe_delete_out_dir(struct g* G) {
      create a lock that will persist for the lifetime of the process
      (this requires leaving the descriptor open).*/
 
-  G->out_dir_fd = open(G->out_dir, O_RDONLY);
-  if (G->out_dir_fd < 0) PFATAL("Unable to open '%s'", G->out_dir);
+  *out_dir_fd = open(G->out_dir, O_RDONLY);
+  if (*out_dir_fd < 0) PFATAL("Unable to open '%s'", G->out_dir);
 
 #ifndef __sun
 
@@ -1745,7 +1750,7 @@ static void maybe_delete_out_dir(struct g* G) {
 
     u8* orig_q = alloc_printf("%s/queue", G->out_dir);
 
-    G->in_dir = alloc_printf("%s/_resume", G->out_dir);
+    in_dir = alloc_printf("%s/_resume", G->out_dir);
 
     rename(orig_q, G->in_dir); /* Ignore errors */
 
@@ -2639,7 +2644,8 @@ static void handle_timeout(int sig) {
    isn't a shell script - a common and painful mistake. We also check for
    a valid ELF header and for evidence of AFL instrumentation. */
 
-static void check_binary(struct g* G, u8* fname) {
+static void check_binary(const struct g* G, u8* fname, u8 **target_path,
+		                 u8 *uses_asan) {
 
   u8* env_path = 0;
   struct stat st;
@@ -2652,7 +2658,7 @@ static void check_binary(struct g* G, u8* fname) {
 
   if (strchr(fname, '/') || !(env_path = getenv("PATH"))) {
 
-    G->target_path = ck_strdup(fname);
+    *target_path = ck_strdup(fname);
     if (stat(G->target_path, &st) || !S_ISREG(st.st_mode) ||
         !(st.st_mode & 0111) || (f_len = st.st_size) < 4)
       FATAL("Program '%s' not found or not executable", fname);
@@ -2674,21 +2680,21 @@ static void check_binary(struct g* G, u8* fname) {
       env_path = delim;
 
       if (cur_elem[0])
-        G->target_path = alloc_printf("%s/%s", cur_elem, fname);
+        *target_path = alloc_printf("%s/%s", cur_elem, fname);
       else
-        G->target_path = ck_strdup(fname);
+        *target_path = ck_strdup(fname);
 
       ck_free(cur_elem);
 
-      if (!stat(G->target_path, &st) && S_ISREG(st.st_mode) &&
+      if (!stat(*target_path, &st) && S_ISREG(st.st_mode) &&
           (st.st_mode & 0111) && (f_len = st.st_size) >= 4) break;
 
-      ck_free(G->target_path);
-      G->target_path = 0;
+      ck_free(*target_path);
+      *target_path = 0;
 
     }
 
-    if (!G->target_path) FATAL("Program '%s' not found or not executable", fname);
+    if (!*target_path) FATAL("Program '%s' not found or not executable", fname);
 
   }
 
@@ -2696,17 +2702,17 @@ static void check_binary(struct g* G, u8* fname) {
 
   /* Check for blatant user errors. */
 
-  if ((!strncmp(G->target_path, "/tmp/", 5) && !strchr(G->target_path + 5, '/')) ||
-      (!strncmp(G->target_path, "/var/tmp/", 9) && !strchr(G->target_path + 9, '/')))
+  if ((!strncmp(*target_path, "/tmp/", 5) && !strchr(*target_path + 5, '/')) ||
+      (!strncmp(*target_path, "/var/tmp/", 9) && !strchr(*target_path + 9, '/')))
      FATAL("Please don't keep binaries in /tmp or /var/tmp");
 
-  fd = open(G->target_path, O_RDONLY);
+  fd = open(*target_path, O_RDONLY);
 
   if (fd < 0) PFATAL("Unable to open '%s'", G->target_path);
 
   f_data = mmap(0, f_len, PROT_READ, MAP_PRIVATE, fd, 0);
 
-  if (f_data == MAP_FAILED) PFATAL("Unable to mmap file '%s'", G->target_path);
+  if (f_data == MAP_FAILED) PFATAL("Unable to mmap file '%s'", *target_path);
 
   close(fd);
 
@@ -2771,7 +2777,7 @@ static void check_binary(struct g* G, u8* fname) {
   }
 
   if (memmem(f_data, f_len, "libasan.so", 10) ||
-      memmem(f_data, f_len, "__msan_init", 11)) G->uses_asan = 1;
+      memmem(f_data, f_len, "__msan_init", 11)) *uses_asan = 1;
 
   if (munmap(f_data, f_len)) PFATAL("unmap() failed");
 
@@ -2780,28 +2786,28 @@ static void check_binary(struct g* G, u8* fname) {
 
 /* Trim and possibly create a banner for the run. */
 
-static void fix_up_banner(struct g* G, u8* name) {
+static void fix_up_banner(u8* name, u8 **use_banner, u8 *sync_id) {
 
-  if (!G->use_banner) {
+  if (!*use_banner) {
 
-    if (G->sync_id) {
+    if (sync_id) {
 
-      G->use_banner = G->sync_id;
+      *use_banner = sync_id;
 
     } else {
 
       u8* trim = strrchr(name, '/');
-      if (!trim) G->use_banner = name; else G->use_banner = trim + 1;
+      if (!trim) *use_banner = name; else *use_banner = trim + 1;
 
     }
 
   }
 
-  if (strlen(G->use_banner) > 40) {
+  if (strlen(*use_banner) > 40) {
 
     u8* tmp = ck_alloc(44);
-    sprintf(tmp, "%.40s...", G->use_banner);
-    G->use_banner = tmp;
+    sprintf(tmp, "%.40s...", *use_banner);
+    *use_banner = tmp;
 
   }
 
@@ -2845,7 +2851,7 @@ static void check_term_size(u8 *term_too_small) {
 
 /* Display usage hints. */
 
-static void usage(struct g* G, u8* argv0) {
+static void usage(const struct g* G, u8* argv0) {
 
   SAYF("\n%s [ options ] -- /path/to/fuzzed_app [ ... ]\n\n"
 
@@ -2884,6 +2890,7 @@ static void usage(struct g* G, u8* argv0) {
 
 /* Prepare output directories and fds. */
 
+/* maybe_delete_out_dir, out_dir_fd, dev_null_fd, dev_urandom_fd, plot_file */
 static void setup_dirs_fds(struct g* G) {
 
   u8* tmp;
@@ -2898,7 +2905,7 @@ static void setup_dirs_fds(struct g* G) {
 
     if (errno != EEXIST) PFATAL("Unable to create '%s'", G->out_dir);
 
-    maybe_delete_out_dir(G);
+    maybe_delete_out_dir(G, &G->out_dir_fd, G->in_dir);
 
   } else {
 
@@ -3004,15 +3011,15 @@ static void setup_dirs_fds(struct g* G) {
 
 /* Setup the output file for fuzzed data, if not using -f. */
 
-static void setup_stdio_file(struct g* G) {
+static void setup_stdio_file(const u8 *out_dir, u32 *out_fd) {
 
-  u8* fn = alloc_printf("%s/.cur_input", G->out_dir);
+  u8* fn = alloc_printf("%s/.cur_input", out_dir);
 
   unlink(fn); /* Ignore errors */
 
-  G->out_fd = open(fn, O_RDWR | O_CREAT | O_EXCL, 0600);
+  *out_fd = open(fn, O_RDWR | O_CREAT | O_EXCL, 0600);
 
-  if (G->out_fd < 0) PFATAL("Unable to create '%s'", fn);
+  if (*out_fd < 0) PFATAL("Unable to create '%s'", fn);
 
   ck_free(fn);
 
@@ -3141,7 +3148,7 @@ static void check_cpu_governor(void) {
 
 
 /* Validate and fix up G->out_dir and G->sync_dir when using -S. */
-
+/* sync_dir, out_dir, skip_deterministic, use_splicing */
 static void fix_up_sync(struct g* G) {
 
   u8* x = G->sync_id;
@@ -3208,7 +3215,7 @@ static void check_asan_opts(void) {
 
 /* Detect @@ in args. */
 
-static void detect_file_args(struct g* G, char** argv) {
+static void detect_file_args(char** argv, u8 **out_file, u8 *out_dir) {
 
   u32 i = 0;
   u8* cwd = getcwd(NULL, 0);
@@ -3225,13 +3232,13 @@ static void detect_file_args(struct g* G, char** argv) {
 
       /* If we don't have a file name chosen yet, use a safe default. */
 
-      if (!G->out_file)
-        G->out_file = alloc_printf("%s/.cur_input", G->out_dir);
+      if (!*out_file)
+        *out_file = alloc_printf("%s/.cur_input", out_dir);
 
       /* Be sure that we're always using fully-qualified paths. */
 
-      if (G->out_file[0] == '/') aa_subst = G->out_file;
-      else aa_subst = alloc_printf("%s/%s", cwd, G->out_file);
+      if (*out_file[0] == '/') aa_subst = *out_file;
+      else aa_subst = alloc_printf("%s/%s", cwd, *out_file);
 
       /* Construct a replacement argv value. */
 
@@ -3240,7 +3247,7 @@ static void detect_file_args(struct g* G, char** argv) {
       argv[i] = n_arg;
       *aa_loc = '@';
 
-      if (G->out_file[0] != '/') ck_free(aa_subst);
+      if (*out_file[0] != '/') ck_free(aa_subst);
 
     }
 
@@ -3307,14 +3314,15 @@ static void setup_signal_handlers(struct g* G) {
 
 /* Rewrite argv for QEMU. */
 
-static char** get_qemu_argv(struct g* G, u8* own_loc, char** argv, int argc) {
+static char** get_qemu_argv(u8* own_loc, char** argv,
+		                    int argc, u8 **target_path) {
 
   char** new_argv = ck_alloc(sizeof(char*) * (argc + 4));
   u8 *tmp, *cp, *rsl, *own_copy;
 
   memcpy(new_argv + 3, argv + 1, sizeof(char*) * argc);
 
-  new_argv[2] = G->target_path;
+  new_argv[2] = *target_path;
   new_argv[1] = "--";
 
   /* Now we need to actually find the QEMU binary to put in argv[0]. */
@@ -3328,7 +3336,7 @@ static char** get_qemu_argv(struct g* G, u8* own_loc, char** argv, int argc) {
     if (access(cp, X_OK))
       FATAL("Unable to find '%s'", tmp);
 
-    G->target_path = new_argv[0] = cp;
+    *target_path = new_argv[0] = cp;
     return new_argv;
 
   }
@@ -3345,7 +3353,7 @@ static char** get_qemu_argv(struct g* G, u8* own_loc, char** argv, int argc) {
 
     if (!access(cp, X_OK)) {
 
-      G->target_path = new_argv[0] = cp;
+      *target_path = new_argv[0] = cp;
       return new_argv;
 
     }
@@ -3354,7 +3362,7 @@ static char** get_qemu_argv(struct g* G, u8* own_loc, char** argv, int argc) {
 
   if (!access(BIN_PATH "/afl-qemu-trace", X_OK)) {
 
-    G->target_path = new_argv[0] = ck_strdup(BIN_PATH "/afl-qemu-trace");
+    *target_path = new_argv[0] = ck_strdup(BIN_PATH "/afl-qemu-trace");
     return new_argv;
 
   }
@@ -3541,7 +3549,7 @@ int main(int argc, char** argv) {
         if (G->in_bitmap) FATAL("Multiple -B options not supported");
 
         G->in_bitmap = optarg;
-        read_bitmap(G, G->in_bitmap);
+        read_bitmap(G, G->in_bitmap, G->virgin_bits);
         break;
 
       case 'C':
@@ -3606,7 +3614,7 @@ int main(int argc, char** argv) {
 
   save_cmdline(G, argc, argv);
 
-  fix_up_banner(G, argv[optind]);
+  fix_up_banner(argv[optind], &G->use_banner, G->sync_id);
 
   check_if_tty(G);
 
@@ -3614,33 +3622,34 @@ int main(int argc, char** argv) {
   check_crash_handling();
   check_cpu_governor();
 
-  setup_post(G);
+  setup_post(&G->post_handler);
   setup_shm(G);
 
   setup_dirs_fds(G);
   read_testcases(G);
   load_auto(G);
 
-  pivot_inputs(G);
+  pivot_inputs(G, &G->resuming_fuzz, &G->max_depth);
 
   if (extras_dir) load_extras(G, extras_dir);
 
-  if (!G->timeout_given) find_timeout(G);
+  if (!G->timeout_given) find_timeout(G, &G->exec_tmout, &G->timeout_given);
 
-  detect_file_args(G, argv + optind + 1);
+  detect_file_args(argv + optind + 1, &G->out_file, G->out_dir);
 
-  if (!G->out_file) setup_stdio_file(G);
+  if (!G->out_file) setup_stdio_file(G->out_dir, &G->out_fd);
 
-  check_binary(G, argv[optind]);
+  check_binary(G, argv[optind], &G->target_path, &G->uses_asan);
 
   G->start_time = get_cur_time();
 
   if (G->qemu_mode)
-    use_argv = get_qemu_argv(G, argv[0], argv + optind, argc - optind);
+    use_argv = get_qemu_argv(argv[0], argv + optind, argc - optind,
+    		                 &G->target_path);
   else
     use_argv = argv + optind;
 
-  perform_dry_run(G, use_argv);
+  perform_dry_run(G, use_argv, &G->useless_at_start);
 
   cull_queue(G);
 

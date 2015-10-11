@@ -44,6 +44,8 @@ struct extra_data {
   u32 hit_cnt;                        /* Use count in the corpus          */
 };
 
+typedef u8* (*post_handler_t)(u8* buf, u32* len);
+
 struct g {
 
          u8 *in_dir,                    /* Input directory with test cases  */
@@ -184,13 +186,13 @@ struct g {
          struct extra_data* a_extras;   /* Automatically selected extras    */
          u32 a_extras_cnt;              /* Total number of tokens available */
   
-         u8* (*post_handler)(u8* buf, u32* len);
+         post_handler_t post_handler;
   
   /* Interesting values, as per config.h */
   
 };
 
-void write_to_testcase(struct g* G, void* mem, u32 len);
+void write_to_testcase(const struct g* G, void* mem, u32 len);
 void show_stats(const struct g* G, u8 *term_too_small,
                 volatile u8 *clear_screen, u8 *bitmap_changed,
                 u8 *auto_changed, volatile u8 *stop_soon,

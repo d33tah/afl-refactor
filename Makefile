@@ -37,8 +37,8 @@ COMM_HDR    = afl-fuzz.h alloc-inl.h config.h debug.h fuzzing-engine.h shm-instr
 
 all: afl-fuzz
 
-afl-fuzz: $(AFL_FUZZ_OBJS) $(COMM_HDR)
-	$(CC) $(CFLAGS) $(AFL_FUZZ_OBJS) -o $@ $(LDFLAGS)
+afl-fuzz:
+	go build -o afl-fuzz .
 
 .NOTPARALLEL: clean
 

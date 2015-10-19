@@ -3412,7 +3412,7 @@ static void save_cmdline(struct g* G, u32 argc, char** argv) {
 
 /* Main entry point */
 
-int main(int argc, char** argv) {
+int afl_main(int argc, char** argv) {
 
   struct g* G = ck_alloc(sizeof(*G));
 

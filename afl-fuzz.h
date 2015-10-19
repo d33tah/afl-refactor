@@ -1,6 +1,18 @@
 #ifndef _HAVE_AFL_FUZZ_H
 #define _HAVE_AFL_FUZZ_H
 
+#ifndef VERSION
+#define VERSION "(not set)"
+#endif
+
+#ifndef DOC_PATH
+#define DOC_PATH "(not set)"
+#endif
+
+#ifndef BIN_PATH
+#define BIN_PATH "(not set)"
+#endif
+
 #include "types.h"
 #include "stdio.h"
 #include "enums.h"

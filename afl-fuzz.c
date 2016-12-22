@@ -1066,7 +1066,7 @@ static void link_or_copy(const u8* old_path, const u8* new_path) {
 }
 
 
-static void nuke_resume_dir(const struct g* G);
+static void nuke_resume_dir(const u8* out_dir);
 
 /* Create hard links for input test cases in the output directory, choosing
    good names and pivoting accordingly. */
@@ -1154,7 +1154,7 @@ static void pivot_inputs(const struct g* G, u8 *resuming_fuzz, u32 *max_depth) {
 
   }
 
-  if (G->in_place_resume) nuke_resume_dir(G);
+  if (G->in_place_resume) nuke_resume_dir(G->out_dir);
 
 }
 
@@ -1635,31 +1635,31 @@ static u8 delete_files(const u8* path, const u8* prefix) {
 
 /* Delete the temporary directory used for in-place session resume. */
 
-static void nuke_resume_dir(const struct g* G) {
+static void nuke_resume_dir(const u8* out_dir) {
 
   u8* fn;
 
-  fn = alloc_printf("%s/_resume/.state/deterministic_done", G->out_dir);
+  fn = alloc_printf("%s/_resume/.state/deterministic_done", out_dir);
   if (delete_files(fn, CASE_PREFIX)) goto dir_cleanup_failed;
   ck_free(fn);
 
-  fn = alloc_printf("%s/_resume/.state/auto_extras", G->out_dir);
+  fn = alloc_printf("%s/_resume/.state/auto_extras", out_dir);
   if (delete_files(fn, "auto_")) goto dir_cleanup_failed;
   ck_free(fn);
 
-  fn = alloc_printf("%s/_resume/.state/redundant_edges", G->out_dir);
+  fn = alloc_printf("%s/_resume/.state/redundant_edges", out_dir);
   if (delete_files(fn, CASE_PREFIX)) goto dir_cleanup_failed;
   ck_free(fn);
 
-  fn = alloc_printf("%s/_resume/.state/variable_behavior", G->out_dir);
+  fn = alloc_printf("%s/_resume/.state/variable_behavior", out_dir);
   if (delete_files(fn, CASE_PREFIX)) goto dir_cleanup_failed;
   ck_free(fn);
 
-  fn = alloc_printf("%s/_resume/.state", G->out_dir);
+  fn = alloc_printf("%s/_resume/.state", out_dir);
   if (rmdir(fn) && errno != ENOENT) goto dir_cleanup_failed;
   ck_free(fn);
 
-  fn = alloc_printf("%s/_resume", G->out_dir);
+  fn = alloc_printf("%s/_resume", out_dir);
   if (delete_files(fn, CASE_PREFIX)) goto dir_cleanup_failed;
   ck_free(fn);
 
@@ -2814,7 +2814,7 @@ static void fix_up_banner(u8* name, u8 **use_banner, u8 *sync_id) {
 
 /* Check if we're on TTY. */
 
-static void check_if_tty(struct g* G) {
+static void check_if_tty(u8* not_on_tty) {
 
   struct winsize ws;
 
@@ -2822,7 +2822,7 @@ static void check_if_tty(struct g* G) {
 
     if (errno == ENOTTY) {
       OKF("Looks like we're not running on a tty, so I'll be a bit less verbose.");
-      G->not_on_tty = 1;
+      *not_on_tty = 1;
     }
 
     return;
@@ -3615,7 +3615,7 @@ int main(int argc, char** argv) {
 
   fix_up_banner(argv[optind], &G->use_banner, G->sync_id);
 
-  check_if_tty(G);
+  check_if_tty(&G->not_on_tty);
 
   get_core_count(&G->cpu_core_count, G->doc_path);
   check_crash_handling();

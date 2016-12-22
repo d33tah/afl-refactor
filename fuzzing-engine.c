@@ -308,7 +308,7 @@ static u8 common_fuzz_stuff(struct g* G, char** argv, u8* out_buf, u32 len) {
 
   }
 
-  write_to_testcase(G, out_buf, len);
+  write_to_testcase(G->out_fd, G->out_file, out_buf, len);
 
   fault = run_target(G, argv, &G->kill_signal, &G->total_execs, &G->stop_soon,
                      &G->child_timed_out, &G->child_pid, G->trace_bits);
@@ -2394,7 +2394,7 @@ u8 calibrate_case(struct g* G, char** argv, struct queue_entry* q,
                  &G->auto_changed, &G->stop_soon, &G->stats_update_freq,
                  &G->run_over10m);
 
-    write_to_testcase(G, use_mem, q->len);
+    write_to_testcase(G->out_fd, G->out_file, use_mem, q->len);
 
     fault = run_target(G, argv, &G->kill_signal, &G->total_execs,
                        &G->stop_soon, &G->child_timed_out, &G->child_pid,

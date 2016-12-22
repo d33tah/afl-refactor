@@ -2,6 +2,8 @@
 #define __HAVE_UTIL_H
 
 #include "types.h"
+#include <string.h>
+#include <unistd.h>
 
 u64 get_cur_time(void);
 u64 get_cur_time_us(void);
@@ -15,7 +17,25 @@ double get_runnable_processes(void);
 void get_core_count(u32 *cpu_core_count, const u8 *doc_path);
 
 u8* DI(u64 val);
-inline u32 UR(struct g* G, u32 limit);
+/* Generate a random number (from 0 to limit - 1). This may
+   have slight bias. */
+
+inline u32 UR(struct g* G, u32 limit) {
+
+  if (!G->rand_cnt--) {
+
+    u32 seed[2];
+
+    ck_read(G->dev_urandom_fd, &seed, sizeof(seed), "/dev/urandom");
+
+    srandom(seed[0]);
+    G->rand_cnt = (RESEED_RNG / 2) + (seed[1] % RESEED_RNG);
+
+  }
+
+  return random() % limit;
+
+}
 u32 next_p2(u32 val);
 
 #define FFL(_b) (0xffULL << ((_b) << 3))

@@ -23,7 +23,7 @@ DOC_PATH    = $(PREFIX)/share/doc/afl
 MISC_PATH   = $(PREFIX)/share/afl
 
 CFLAGS     ?= -O3 -funroll-loops
-CFLAGS     += -Werror -Wall -D_FORTIFY_SOURCE=2 -g -Wno-pointer-sign \
+CFLAGS     += -Wall -D_FORTIFY_SOURCE=2 -g -Wno-pointer-sign \
 	      -DAFL_PATH=\"$(HELPER_PATH)\" -DDOC_PATH=\"$(DOC_PATH)\" \
 	      -DBIN_PATH=\"$(BIN_PATH)\" -DVERSION=\"$(VERSION)\"
 

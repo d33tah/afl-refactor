@@ -790,23 +790,21 @@ static void destroy_extras(const struct g* G) {
    is unlinked and a new one is created. Otherwise, G->out_fd is rewound and
    truncated. */
 
-void write_to_testcase(const struct g* G, void* mem, u32 len) {
+void write_to_testcase(s32 fd, const u8* out_file, void* mem, const u32 len) {
 
-  s32 fd = G->out_fd;
+  if (out_file) {
 
-  if (G->out_file) {
+    unlink(out_file); /* Ignore errors. */
 
-    unlink(G->out_file); /* Ignore errors. */
+    fd = open(out_file, O_WRONLY | O_CREAT | O_EXCL, 0600);
 
-    fd = open(G->out_file, O_WRONLY | O_CREAT | O_EXCL, 0600);
-
-    if (fd < 0) PFATAL("Unable to create '%s'", G->out_file);
+    if (fd < 0) PFATAL("Unable to create '%s'", out_file);
 
   } else lseek(fd, 0, SEEK_SET);
 
-  ck_write(fd, mem, len, G->out_file);
+  ck_write(fd, mem, len, out_file);
 
-  if (!G->out_file) {
+  if (!out_file) {
 
     if (ftruncate(fd, len)) PFATAL("ftruncate() failed");
     lseek(fd, 0, SEEK_SET);
@@ -2561,7 +2559,7 @@ static void sync_fuzzers(struct g* G, char** argv) {
         /* See what happens. We rely on save_if_interesting() to catch major
            errors and save the test case. */
 
-        write_to_testcase(G, mem, st.st_size);
+        write_to_testcase(G->out_fd, G->out_file, mem, st.st_size);
 
         fault = run_target(G, argv, &G->kill_signal, &G->total_execs,
                            &G->stop_soon, &G->child_timed_out, &G->child_pid,

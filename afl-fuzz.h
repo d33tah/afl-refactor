@@ -192,7 +192,7 @@ struct g {
   
 };
 
-void write_to_testcase(const struct g* G, void* mem, u32 len);
+void write_to_testcase(s32 fd, const u8* out_file, void* mem, const u32 len);
 void show_stats(const struct g* G, u8 *term_too_small,
                 volatile u8 *clear_screen, u8 *bitmap_changed,
                 u8 *auto_changed, volatile u8 *stop_soon,

@@ -1675,30 +1675,30 @@ dir_cleanup_failed:
 /* Delete fuzzer output directory if we recognize it as ours, if the fuzzer
    is not currently running, and if the last run time isn't too great. */
 
-static void maybe_delete_out_dir(const struct g* G, u32 *out_dir_fd,
-		                         u8 *in_dir) {
+static void maybe_delete_out_dir(const u8 *out_dir, const u8 *in_dir, u8 in_place_resume,
+                                 u32 *out_dir_fd, const u8 *sync_id) {
 
   FILE* f;
-  u8 *fn = alloc_printf("%s/fuzzer_stats", G->out_dir);
+  u8 *fn = alloc_printf("%s/fuzzer_stats", out_dir);
 
   /* See if the output directory is locked. If yes, bail out. If not,
      create a lock that will persist for the lifetime of the process
      (this requires leaving the descriptor open).*/
 
-  *out_dir_fd = open(G->out_dir, O_RDONLY);
-  if (*out_dir_fd < 0) PFATAL("Unable to open '%s'", G->out_dir);
+  *out_dir_fd = open(out_dir, O_RDONLY);
+  if (*out_dir_fd < 0) PFATAL("Unable to open '%s'", out_dir);
 
 #ifndef __sun
 
-  if (flock(G->out_dir_fd, LOCK_EX | LOCK_NB) && errno == EWOULDBLOCK) {
+  if (flock(*out_dir_fd, LOCK_EX | LOCK_NB) && errno == EWOULDBLOCK) {
 
     SAYF("\n" cLRD "[-] " cRST
          "Looks like the job output directory is being actively used by another\n"
          "    instance of afl-fuzz. You will need to choose a different %s\n"
          "    or stop the other process first.\n",
-         G->sync_id ? "fuzzer ID" : "output location");
+         sync_id ? "fuzzer ID" : "output location");
 
-    FATAL("Directory '%s' is in use", G->out_dir);
+    FATAL("Directory '%s' is in use", out_dir);
 
   }
 
@@ -1718,7 +1718,7 @@ static void maybe_delete_out_dir(const struct g* G, u32 *out_dir_fd,
 
     /* Let's see how much work is at stake. */
 
-    if (!G->in_place_resume && last_update - start_time > OUTPUT_GRACE * 60) {
+    if (!in_place_resume && last_update - start_time > OUTPUT_GRACE * 60) {
 
       SAYF("\n" cLRD "[-] " cRST
            "The job output directory already exists and contains the results of more\n"
@@ -1730,7 +1730,7 @@ static void maybe_delete_out_dir(const struct g* G, u32 *out_dir_fd,
            "    session, put '-' as the input directory in the command line ('-i -') and\n"
            "    try again.\n", OUTPUT_GRACE);
 
-       FATAL("At-risk data found in in '%s'", G->out_dir);
+       FATAL("At-risk data found in in '%s'", out_dir);
 
     }
 
@@ -1744,13 +1744,13 @@ static void maybe_delete_out_dir(const struct g* G, u32 *out_dir_fd,
      incomplete due to an earlier abort, so we want to use the old _resume/
      dir instead, and we let rename() fail silently. */
 
-  if (G->in_place_resume) {
+  if (in_place_resume) {
 
-    u8* orig_q = alloc_printf("%s/queue", G->out_dir);
+    u8* orig_q = alloc_printf("%s/queue", out_dir);
 
-    in_dir = alloc_printf("%s/_resume", G->out_dir);
+    in_dir = alloc_printf("%s/_resume", out_dir);
 
-    rename(orig_q, G->in_dir); /* Ignore errors */
+    rename(orig_q, in_dir); /* Ignore errors */
 
     OKF("Output directory exists, will attempt session resume.");
 
@@ -1765,57 +1765,57 @@ static void maybe_delete_out_dir(const struct g* G, u32 *out_dir_fd,
   ACTF("Deleting old session data...");
 
   /* Okay, let's get the ball rolling! First, we need to get rid of the entries
-     in <G->out_dir>/.synced/.../id:*, if any are present. */
+     in <out_dir>/.synced/.../id:*, if any are present. */
 
-  fn = alloc_printf("%s/.synced", G->out_dir);
+  fn = alloc_printf("%s/.synced", out_dir);
   if (delete_files(fn, NULL)) goto dir_cleanup_failed;
   ck_free(fn);
 
-  /* Next, we need to clean up <G->out_dir>/queue/.state/ subdirectories: */
+  /* Next, we need to clean up <out_dir>/queue/.state/ subdirectories: */
 
-  fn = alloc_printf("%s/queue/.state/deterministic_done", G->out_dir);
+  fn = alloc_printf("%s/queue/.state/deterministic_done", out_dir);
   if (delete_files(fn, CASE_PREFIX)) goto dir_cleanup_failed;
   ck_free(fn);
 
-  fn = alloc_printf("%s/queue/.state/auto_extras", G->out_dir);
+  fn = alloc_printf("%s/queue/.state/auto_extras", out_dir);
   if (delete_files(fn, "auto_")) goto dir_cleanup_failed;
   ck_free(fn);
 
-  fn = alloc_printf("%s/queue/.state/redundant_edges", G->out_dir);
+  fn = alloc_printf("%s/queue/.state/redundant_edges", out_dir);
   if (delete_files(fn, CASE_PREFIX)) goto dir_cleanup_failed;
   ck_free(fn);
 
-  fn = alloc_printf("%s/queue/.state/variable_behavior", G->out_dir);
+  fn = alloc_printf("%s/queue/.state/variable_behavior", out_dir);
   if (delete_files(fn, CASE_PREFIX)) goto dir_cleanup_failed;
   ck_free(fn);
 
   /* Then, get rid of the .state subdirectory itself (should be empty by now)
-     and everything matching <G->out_dir>/queue/id:*. */
+     and everything matching <out_dir>/queue/id:*. */
 
-  fn = alloc_printf("%s/queue/.state", G->out_dir);
+  fn = alloc_printf("%s/queue/.state", out_dir);
   if (rmdir(fn) && errno != ENOENT) goto dir_cleanup_failed;
   ck_free(fn);
 
-  fn = alloc_printf("%s/queue", G->out_dir);
+  fn = alloc_printf("%s/queue", out_dir);
   if (delete_files(fn, CASE_PREFIX)) goto dir_cleanup_failed;
   ck_free(fn);
 
-  /* All right, let's do <G->out_dir>/crashes/id:* and <G->out_dir>/hangs/id:*. */
+  /* All right, let's do <out_dir>/crashes/id:* and <out_dir>/hangs/id:*. */
 
-  if (!G->in_place_resume) {
+  if (!in_place_resume) {
 
-    fn = alloc_printf("%s/crashes/README.txt", G->out_dir);
+    fn = alloc_printf("%s/crashes/README.txt", out_dir);
     unlink(fn); /* Ignore errors */
     ck_free(fn);
 
   }
 
-  fn = alloc_printf("%s/crashes", G->out_dir);
+  fn = alloc_printf("%s/crashes", out_dir);
 
   /* Make backup of the crashes directory if it's not empty and if we're
      doing in-place resume. */
 
-  if (G->in_place_resume && rmdir(fn)) {
+  if (in_place_resume && rmdir(fn)) {
 
     time_t cur_t = time(0);
     struct tm* t = localtime(&cur_t);
@@ -1842,11 +1842,11 @@ static void maybe_delete_out_dir(const struct g* G, u32 *out_dir_fd,
   if (delete_files(fn, CASE_PREFIX)) goto dir_cleanup_failed;
   ck_free(fn);
 
-  fn = alloc_printf("%s/hangs", G->out_dir);
+  fn = alloc_printf("%s/hangs", out_dir);
 
   /* Backup hangs, too. */
 
-  if (G->in_place_resume && rmdir(fn)) {
+  if (in_place_resume && rmdir(fn)) {
 
     time_t cur_t = time(0);
     struct tm* t = localtime(&cur_t);
@@ -1875,21 +1875,21 @@ static void maybe_delete_out_dir(const struct g* G, u32 *out_dir_fd,
 
   /* And now, for some finishing touches. */
 
-  fn = alloc_printf("%s/.cur_input", G->out_dir);
+  fn = alloc_printf("%s/.cur_input", out_dir);
   if (unlink(fn) && errno != ENOENT) goto dir_cleanup_failed;
   ck_free(fn);
 
-  fn = alloc_printf("%s/fuzz_bitmap", G->out_dir);
+  fn = alloc_printf("%s/fuzz_bitmap", out_dir);
   if (unlink(fn) && errno != ENOENT) goto dir_cleanup_failed;
   ck_free(fn);
 
-  if (!G->in_place_resume) {
-    fn  = alloc_printf("%s/fuzzer_stats", G->out_dir);
+  if (!in_place_resume) {
+    fn  = alloc_printf("%s/fuzzer_stats", out_dir);
     if (unlink(fn) && errno != ENOENT) goto dir_cleanup_failed;
     ck_free(fn);
   }
 
-  fn = alloc_printf("%s/plot_data", G->out_dir);
+  fn = alloc_printf("%s/plot_data", out_dir);
   if (unlink(fn) && errno != ENOENT) goto dir_cleanup_failed;
   ck_free(fn);
 
@@ -2903,7 +2903,8 @@ static void setup_dirs_fds(struct g* G) {
 
     if (errno != EEXIST) PFATAL("Unable to create '%s'", G->out_dir);
 
-    maybe_delete_out_dir(G, &G->out_dir_fd, G->in_dir);
+    maybe_delete_out_dir(G->out_dir, G->in_dir, G->in_place_resume,
+                         &G->out_dir_fd, G->sync_id);
 
   } else {
 

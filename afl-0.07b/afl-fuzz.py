@@ -2,11 +2,15 @@
 
 import unittest
 import ctypes
+import os
+import stat
 
 try:
     from unittest import mock
 except ImportError:
     import mock
+
+MAX_FILESIZE = 1 * 1000 * 1000
 
 
 # we'll be working both with bytearrays and ctypes strings.
@@ -110,6 +114,90 @@ class SetupSHMTest(unittest.TestCase):
     def test_calls_shmat(self):
         setup_shm(1)
         self.mock_shmat.assert_called()
+
+
+def read_testcases(in_dir, queue):
+    """Read all testcases from the input directory, then queue them for testing."""
+    for fname in os.listdir(in_dir):
+        if not os.access(fname, os.R_OK):
+            raise RuntimeError('Unable to open %s' % repr(fname))
+        st = os.stat(fname)
+        if not stat.S_ISREG(st.st_mode) or not st.st_size:
+            continue
+        if st.st_size > MAX_FILESIZE:
+            raise RuntimeError('Test case %s is too big' % repr(fname))
+        queue.append({'fname': fname, 'flen': st.st_size, 'keep': True, 'det_done': False})
+    # NOTE: I removed the "No usable test cases" error - check it in main().
+
+
+class ReadTestcasesTest(unittest.TestCase):
+
+    @mock.patch('os.listdir')
+    def test_calls_listdir(self, mock_listdir):
+        read_testcases('.', [])
+        mock_listdir.assert_called()
+
+    @mock.patch('os.listdir', lambda _: [None])
+    @mock.patch('os.access')
+    def test_calls_access(self, mock_access):
+        with self.assertRaises(RuntimeError):
+            mock_access.return_value = False
+            read_testcases('.', [])
+            mock_access.assert_called()
+
+    @mock.patch('os.listdir', lambda _: [None])
+    @mock.patch('os.access')
+    def test_throws_exception_if_cannot_access(self, mock_access):
+        with self.assertRaises(RuntimeError):
+            mock_access.return_value = False
+            read_testcases('.', [])
+            mock_access.assert_called()
+
+    @mock.patch('os.listdir', lambda _: [None])
+    @mock.patch('os.access', lambda _1, _2: True)
+    @mock.patch('os.stat')
+    def test_calls_stat(self, mock_stat):
+        read_testcases('.', [])
+        mock_stat.assert_called()
+
+    @mock.patch('os.listdir', lambda _: [None])
+    @mock.patch('os.access', lambda _1, _2: True)
+    @mock.patch('os.stat', mock.Mock())
+    @mock.patch('stat.S_ISREG')
+    def test_doesnt_add_if_not_isreg(self, mock_isreg):
+        q = []
+        mock_isreg.return_value = False
+        read_testcases('.', q)
+        self.assertEqual(len(q), 0)
+
+    @mock.patch('os.listdir', lambda _: [None])
+    @mock.patch('os.access', lambda _1, _2: True)
+    @mock.patch('stat.S_ISREG', mock.Mock())
+    @mock.patch('os.stat')
+    def test_doesnt_add_if_empty(self, mock_stat):
+        q = []
+        mock_stat.return_value = mock.Mock(st_size=0)
+        read_testcases('.', q)
+        self.assertEqual(len(q), 0)
+
+    @mock.patch('os.listdir', lambda _: [None])
+    @mock.patch('os.access', lambda _1, _2: True)
+    @mock.patch('stat.S_ISREG', mock.Mock())
+    @mock.patch('os.stat')
+    def test_adds_to_queue(self, mock_stat):
+        q = []
+        mock_stat.return_value = mock.Mock(st_size=1)
+        read_testcases('.', q)
+        self.assertEqual(len(q), 1)
+
+    @mock.patch('os.listdir', lambda _: [None])
+    @mock.patch('os.access', lambda _1, _2: True)
+    @mock.patch('stat.S_ISREG', mock.Mock())
+    @mock.patch('os.stat')
+    def test_throws_exception_if_too_big(self, mock_stat):
+        mock_stat.return_value = mock.Mock(st_size=MAX_FILESIZE + 1)
+        with self.assertRaises(RuntimeError):
+            read_testcases('.', [])
 
 
 if __name__ == '__main__':

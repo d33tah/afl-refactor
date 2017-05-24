@@ -18,6 +18,7 @@ MAX_FILESIZE = 1 * 1000 * 1000
 DEV_NULL = open(os.devnull).fileno()
 FAULT_NONE, FAULT_HANG, FAULT_CRASH, FAULT_ERROR = range(4)
 EXEC_FAIL = 0x55
+IPC_PRIVATE, IPC_CREAT, IPC_EXCL = 0, 512, 1024
 
 
 # we'll be working both with bytearrays and ctypes strings.
@@ -25,12 +26,19 @@ EXEC_FAIL = 0x55
 def O(x):
     return x if isinstance(x, int) else ord(x)
 
+if sys.version.startswith('3'):
+    def to_byte(x):
+        return x
+else:
+    def to_byte(x):
+        return chr(x)
+
 
 def has_new_bits(current, virgin):
     n = min([len(current), len(virgin)])
     for i in range(n):
         if O(current[i]) & O(virgin[i]):
-            virgin[i] = chr(O(virgin[i]) & O(current[i]))
+            virgin[i] = to_byte(O(virgin[i]) & O(current[i]))
             return True
     return False
 
@@ -40,8 +48,6 @@ def count_bits(mem):
 
 
 def setup_shm(mem_size):
-
-    IPC_PRIVATE, IPC_CREAT, IPC_EXCL = 0, 512, 1024
 
     shmget = ctypes.cdll.LoadLibrary("libc.so.6").shmget
     shmat = ctypes.cdll.LoadLibrary("libc.so.6").shmat
@@ -75,9 +81,9 @@ class HasNewBitsTest(unittest.TestCase):
 
     def test_updates_virgin_bits_if_common_bits_and_virgin_is_ctypes_string(self):
         virgin = ctypes.create_string_buffer(1)
-        virgin[0] = '\x03'
+        virgin[0] = b'\x03'
         has_new_bits(bytearray([2]), virgin)
-        self.assertEqual(virgin[0], '\x02')
+        self.assertEqual(virgin[0], b'\x02')
 
 
 class CountBitsTest(unittest.TestCase):
@@ -92,16 +98,16 @@ class CountBitsTest(unittest.TestCase):
 
     def test_returns_four_for_one_and_seven_and_buf_is_ctypes_string(self):
         buf = ctypes.create_string_buffer(2)
-        buf[0] = '\x01'
-        buf[1] = '\x07'
+        buf[0] = b'\x01'
+        buf[1] = b'\x07'
         self.assertEqual(4, count_bits(buf))
 
 
 class SetupSHMTest(unittest.TestCase):
 
     def setUp(self):
-        self.mock_shmget = mock.Mock()
-        self.mock_shmat = mock.Mock()
+        self.mock_shmget = mock.Mock(return_value=0)
+        self.mock_shmat = mock.Mock(return_value=0)
         self.mock_shmat.return_value = [ctypes.create_string_buffer(1)]
 
         def mock_load_library_side_effect(lib):
@@ -116,11 +122,11 @@ class SetupSHMTest(unittest.TestCase):
 
     def test_calls_shmget(self):
         setup_shm(1)
-        self.mock_shmget.assert_called()
+        self.mock_shmget.assert_called_once_with(0, 1, IPC_CREAT | IPC_EXCL | 0o600)
 
     def test_calls_shmat(self):
         setup_shm(1)
-        self.mock_shmat.assert_called()
+        self.mock_shmat.assert_called_once_with(0, 0, 0)
 
 
 def read_testcases(in_dir, queue):
@@ -142,7 +148,7 @@ class ReadTestcasesTest(unittest.TestCase):
     @mock.patch('os.listdir')
     def test_calls_listdir(self, mock_listdir):
         read_testcases('.', [])
-        mock_listdir.assert_called()
+        mock_listdir.assert_called_once_with('.')
 
     @mock.patch('os.listdir', lambda _: [None])
     @mock.patch('os.access')
@@ -150,7 +156,7 @@ class ReadTestcasesTest(unittest.TestCase):
         with self.assertRaises(RuntimeError):
             mock_access.return_value = False
             read_testcases('.', [])
-            mock_access.assert_called()
+            mock_access.assert_called_once_with()
 
     @mock.patch('os.listdir', lambda _: [None])
     @mock.patch('os.access')
@@ -158,14 +164,15 @@ class ReadTestcasesTest(unittest.TestCase):
         with self.assertRaises(RuntimeError):
             mock_access.return_value = False
             read_testcases('.', [])
-            mock_access.assert_called()
+            mock_access.assert_called_once_with()
 
     @mock.patch('os.listdir', lambda _: [None])
     @mock.patch('os.access', lambda _1, _2: True)
     @mock.patch('os.stat')
     def test_calls_stat(self, mock_stat):
+        mock_stat.return_value = mock.Mock(st_size=0, st_mode=0)
         read_testcases('.', [])
-        mock_stat.assert_called()
+        mock_stat.assert_called_once_with(None)
 
     @mock.patch('os.listdir', lambda _: [None])
     @mock.patch('os.access', lambda _1, _2: True)
@@ -292,7 +299,7 @@ def run_target(mem_limit, argv, trace_bits, total_execs, child_pid, out_file,
 class RunTargetTest(unittest.TestCase):
 
     def setUp(self):
-        self.fork_patcher = mock.patch('os.fork')
+        self.fork_patcher = mock.patch('os.fork', mock.Mock(return_value=1))
         self.fork_mocked = self.fork_patcher.start()
         self.total_execs = [0]
         self.child_pid = [0]

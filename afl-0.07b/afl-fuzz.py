@@ -3,7 +3,11 @@
 import unittest
 import ctypes
 import os
+import sys
 import stat
+import resource
+# We need this one in order to be able to mock.patch self:
+import __main__  # NOQA
 
 try:
     from unittest import mock
@@ -11,6 +15,9 @@ except ImportError:
     import mock
 
 MAX_FILESIZE = 1 * 1000 * 1000
+DEV_NULL = open(os.devnull).fileno()
+FAULT_NONE, FAULT_HANG, FAULT_CRASH, FAULT_ERROR = range(4)
+EXEC_FAIL = 0x55
 
 
 # we'll be working both with bytearrays and ctypes strings.
@@ -198,6 +205,126 @@ class ReadTestcasesTest(unittest.TestCase):
         mock_stat.return_value = mock.Mock(st_size=MAX_FILESIZE + 1)
         with self.assertRaises(RuntimeError):
             read_testcases('.', [])
+
+
+#############################################################################
+#                                                                           #
+#                            <HERE_BE_DRAGONS>                              #
+#                                                                           #
+#############################################################################
+
+
+
+def PFATAL(*args, **kwargs):
+    raise NotImplementedError()
+
+
+def set_itimer_real(tv_sec, tv_usec):
+    # ITIMER_REAL This timer counts down in real (i.e., wall clock) timer.
+    # At each expiration, a SIGALRM signal is generated.
+    #
+    # SIGALRM handler = handle_timeout, which sets child_timed_out and SIGKILLs child_pid.
+
+    # static struct itimerval it
+    # it.it_value.tv_sec = tv_sec
+    # it.it_value.tv_usec = tv_usec
+    # setitimer(ITIMER_REAL, &it, NULL)
+    raise NotImplementedError()
+
+
+def memset(where, value, length):
+    raise NotImplementedError()
+
+
+def run_target(mem_limit, argv, trace_bits, total_execs, child_pid, out_file,
+               out_fd, child_timed_out, exec_tmout, kill_signal, stop_soon):
+    """Execute target application, monitoring for timeouts. Return status
+    information. The called program will update trace_bits[]."""
+
+    child_timed_out[0] = True
+    memset(trace_bits, 0, 65536)
+    child_pid[0] = os.fork()
+
+    if child_pid[0] < 0:
+        PFATAL("fork() failed")
+
+    if not child_pid[0]:
+        memory_limit = mem_limit << 20
+        resource.setrlimit(resource.RLIMIT_AS, (memory_limit, memory_limit))
+        os.setsid()
+        os.dup2(DEV_NULL, 1)
+        os.dup2(DEV_NULL, 2)
+        if out_file:
+            os.dup2(DEV_NULL, 0)
+        else:
+            os.dup2(out_fd, 0)
+            os.close(out_fd)
+
+        os.close(DEV_NULL)
+        os.execvp(argv[0], argv)
+        sys.exit(EXEC_FAIL)
+
+    set_itimer_real((exec_tmout / 1000), (exec_tmout % 1000) * 1000)
+
+    waitpid_result, status = os.waitpid(child_pid[0], os.WUNTRACED)
+    if waitpid_result <= 0:
+        PFATAL("waitpid() failed")
+
+    child_pid[0] = 0
+    set_itimer_real(0, 0)
+    total_execs[0] += 1
+
+    # Report outcome to caller.
+
+    if child_timed_out[0]:
+        return FAULT_HANG
+
+    if os.WIFSIGNALED(status) and not stop_soon:
+        kill_signal[0] = os.WTERMSIG(status)
+        return FAULT_CRASH
+
+    return FAULT_ERROR if os.WEXITSTATUS(status) == EXEC_FAIL else 0
+
+
+@mock.patch('__main__.memset', mock.Mock())
+@mock.patch('__main__.set_itimer_real', mock.Mock())
+@mock.patch('os.waitpid', mock.Mock(return_value=[1, 1]))
+class RunTargetTest(unittest.TestCase):
+
+    def setUp(self):
+        self.fork_patcher = mock.patch('os.fork')
+        self.fork_mocked = self.fork_patcher.start()
+        self.total_execs = [0]
+        self.child_pid = [0]
+        self.child_timed_out = [False]
+        self.kill_signal = [0]
+        self.example_args = {
+            'mem_limit': 1,
+            'argv': [],
+            'trace_bits': '',  # FIXME
+            'total_execs': self.total_execs,
+            'child_pid': self.child_pid,
+            'out_file': 'something',  # FIXME
+            'out_fd': 255,
+            'child_timed_out': self.child_timed_out,
+            'exec_tmout': 0,
+            'kill_signal': self.kill_signal,
+            'stop_soon': False,
+        }
+
+    def tearDown(self):
+        self.fork_patcher.stop()
+
+    def test_calls_fork(self):
+        run_target(**self.example_args)
+        self.fork_mocked.assert_called_once_with()
+
+
+#############################################################################
+#                                                                           #
+#                            </HERE_BE_DRAGONS>                             #
+#                                                                           #
+#############################################################################
 
 
 if __name__ == '__main__':

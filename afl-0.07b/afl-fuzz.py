@@ -296,6 +296,11 @@ def run_target(mem_limit, argv, trace_bits, total_execs, child_pid, out_file,
 @mock.patch('__main__.memset', mock.Mock())
 @mock.patch('__main__.set_itimer_real', mock.Mock())
 @mock.patch('os.waitpid', mock.Mock(return_value=[1, 1]))
+@mock.patch('os.setsid', mock.Mock())
+@mock.patch('os.dup2', mock.Mock())
+@mock.patch('os.close', mock.Mock())
+@mock.patch('os.execvp', mock.Mock())
+@mock.patch('sys.exit', mock.Mock())
 class RunTargetTest(unittest.TestCase):
 
     def setUp(self):
@@ -307,7 +312,7 @@ class RunTargetTest(unittest.TestCase):
         self.kill_signal = [0]
         self.example_args = {
             'mem_limit': 1,
-            'argv': [],
+            'argv': ['something'],
             'trace_bits': '',  # FIXME
             'total_execs': self.total_execs,
             'child_pid': self.child_pid,
@@ -325,6 +330,10 @@ class RunTargetTest(unittest.TestCase):
     def test_calls_fork(self):
         run_target(**self.example_args)
         self.fork_mocked.assert_called_once_with()
+
+    def test_doesnt_crash_in_forked_process(self):
+        self.fork_mocked.return_value = 0
+        run_target(**self.example_args)
 
 
 #############################################################################

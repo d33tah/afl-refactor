@@ -10,6 +10,8 @@ import sys
 import unittest
 import warnings
 
+import __main__
+
 try:
     from unittest import mock
 except ImportError:
@@ -226,7 +228,8 @@ def PFATAL(*args, **kwargs):
 
 
 def run_target_forked(mem_limit, out_fd, out_file, argv):
-    warnings.simplefilter("ignore", ResourceWarning)
+    if sys.version.startswith('3'):
+        warnings.simplefilter("ignore", ResourceWarning)
     f = open(os.devnull)
     DEV_NULL = f.fileno()
     memory_limit = mem_limit << 20
@@ -440,25 +443,56 @@ class SHMSystemTests(unittest.TestCase):
         # TODO
         pass
 
-    def test_run_target(self):
-        total_execs = [0]
-        child_pid = [0]
-        child_timed_out = [True]
-        kill_signal = [0]
+    def test_run_target_nonexistent_binary(self):
         retcode = run_target(**{
             'mem_limit': 1,
             'argv': ['something'],
-            'trace_bits': self.trace_bits,  # FIXME
-            'total_execs': total_execs,
-            'child_pid': child_pid,
+            'trace_bits': self.trace_bits,
+            'total_execs': [0],
+            'child_pid': [0],
             'out_file': 'something',  # FIXME
             'out_fd': 255,
-            'child_timed_out': child_timed_out,
+            'child_timed_out': [False],
             'exec_tmout': 100,
-            'kill_signal': kill_signal,
+            'kill_signal': [0],
             'stop_soon': False,
         })
         self.assertEqual(retcode, FAULT_ERROR)
+
+    def test_run_target_timeout(self):
+        old_signal_handler = signal.getsignal(signal.SIGALRM)
+        child_timed_out = [False]
+        child_pid = [0]
+        def sigalrm_handler(*args, **kwargs):
+            child_timed_out[0] = True
+            if child_pid[0] > 0:
+                os.kill(child_pid[0], signal.SIGKILL)
+        signal.signal(signal.SIGALRM, sigalrm_handler)
+        try:
+            old_run_target_forked = run_target_forked
+            with mock.patch('__main__.run_target_forked') as m:
+                def side_effect(*args, **kwargs):
+                    time.sleep(1)
+                    old_run_target_forked(*args, **kwargs)
+                m.side_effect = side_effect
+                retcode = run_target(**{
+                    'mem_limit': 1,
+                    'argv': ['something'],
+                    'trace_bits': self.trace_bits,  # FIXME
+                    'total_execs': [0],
+                    'child_pid': child_pid,
+                    'out_file': 'something',  # FIXME
+                    'out_fd': 255,
+                    'child_timed_out': [False],
+                    'exec_tmout': 100,
+                    'kill_signal': [0],
+                    'stop_soon': False,
+                })
+            self.assertEqual(retcode, FAULT_HANG)
+        finally:
+            signal.signal(signal.SIGALRM, old_signal_handler)
+
+
 
 class ReadTestcasesSystemTests(unittest.TestCase):
     pass

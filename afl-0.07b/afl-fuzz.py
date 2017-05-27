@@ -436,6 +436,19 @@ class SHMSystemTests(unittest.TestCase):
     def setUp(self):
         self.shmctl = ctypes.cdll.LoadLibrary("libc.so.6").shmctl
         self.shm_id, self.trace_bits = setup_shm(65536)
+        self.run_target_args = {
+            'mem_limit': 100,
+            'argv': ['something'],
+            'trace_bits': self.trace_bits,
+            'total_execs': [0],
+            'child_pid': [0],
+            'out_file': 'something',  # FIXME
+            'out_fd': 255,
+            'child_timed_out': [False],
+            'exec_tmout': 100,
+            'kill_signal': [0],
+            'stop_soon': False,
+        }
 
     def tearDown(self):
         self.shmctl(self.shm_id, 0, 0)
@@ -468,19 +481,7 @@ class SHMSystemTests(unittest.TestCase):
         pass
 
     def test_run_target_nonexistent_binary(self):
-        retcode = run_target(**{
-            'mem_limit': 100,
-            'argv': ['something'],
-            'trace_bits': self.trace_bits,
-            'total_execs': [0],
-            'child_pid': [0],
-            'out_file': 'something',  # FIXME
-            'out_fd': 255,
-            'child_timed_out': [False],
-            'exec_tmout': 100,
-            'kill_signal': [0],
-            'stop_soon': False,
-        })
+        retcode = run_target(**self.run_target_args)
         self.assertEqual(retcode, FAULT_ERROR)
 
     @mock.patch.dict(globals(), {'run_target_forked': MOCK_RUN_TARGET_FORKED})
@@ -495,49 +496,26 @@ class SHMSystemTests(unittest.TestCase):
                 os.kill(child_pid[0], signal.SIGKILL)
         signal.signal(signal.SIGALRM, sigalrm_handler)
 
-        child_timed_out = [False]
-        child_pid = [0]
-        kill_signal = [0]
         try:
-            retcode = run_target(**{
-                'mem_limit': 100,
-                'argv': ['something'],
-                'trace_bits': self.trace_bits,
-                'total_execs': [0],
+            child_timed_out = [False]
+            child_pid = [0]
+            kill_signal = [0]
+            self.run_target_args.update({
                 'child_pid': child_pid,
-                'out_file': 'something',  # FIXME
-                'out_fd': 255,
-                'child_timed_out': child_timed_out,
-                'exec_tmout': 100,
                 'kill_signal': kill_signal,
-                'stop_soon': False,
+                'child_timed_out': child_timed_out,
             })
+            retcode = run_target(**self.run_target_args)
             self.assertEqual(retcode, FAULT_HANG)
         finally:
             signal.signal(signal.SIGALRM, old_signal_handler)
 
     def test_run_target_no_error(self):
-        retcode = run_target(**{
-            'mem_limit': 100,
-            'argv': ['a.out'],
-            'trace_bits': self.trace_bits,
-            'total_execs': [0],
-            'child_pid': [0],
-            'out_file': 'a.out',  # FIXME
-            'out_fd': 255,
-            'child_timed_out': [False],
-            'exec_tmout': 100,
-            'kill_signal': [0],
-            'stop_soon': False,
-        })
+        self.run_target_args['argv'] = ['a.out']
+        retcode = run_target(**self.run_target_args)
         self.assertEqual(retcode, FAULT_NONE)
         self.assertNotEqual(bytearray(self.trace_bits),
                             b'\x00' * len(self.trace_bits))
-
-# FIXME: this is potentially interesting - the following segfaults:
-#
-#    def test_run_target_forked(self):
-#        run_target_forked(1, 255, 255, ['a.out'])
 
 
 class ReadTestcasesSystemTests(unittest.TestCase):

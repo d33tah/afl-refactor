@@ -1,4 +1,4 @@
-#!/usr/bin/env python
+#!/usr/bin/env python3
 
 import ctypes
 import os
@@ -21,6 +21,7 @@ MAX_FILESIZE = 1 * 1000 * 1000
 FAULT_NONE, FAULT_HANG, FAULT_CRASH, FAULT_ERROR = range(4)
 EXEC_FAIL = 0x55
 IPC_PRIVATE, IPC_CREAT, IPC_EXCL = 0, 512, 1024
+SHM_ENV_VAR = "__AFL_SHM_ID"
 
 
 # we'll be working both with bytearrays and ctypes strings.
@@ -65,6 +66,8 @@ def setup_shm(mem_size):
     except ValueError:
         # NULL pointer access
         raise RuntimeError('shmat failed, returning NULL pointer')
+
+    os.environ[SHM_ENV_VAR] = str(shm_id)
 
     return shm_id, trace_bits
 
@@ -129,6 +132,15 @@ class SetupSHMTest(unittest.TestCase):
     def test_calls_shmat(self):
         setup_shm(1)
         self.mock_shmat.assert_called_once_with(0, 0, 0)
+
+    def test_assigns_env_variable(self):
+        old_value = os.environ[SHM_ENV_VAR]
+        os.environ[SHM_ENV_VAR] = 'nope'
+        try:
+            setup_shm(1)
+            self.assertNotEqual(os.environ[SHM_ENV_VAR], 'nope')
+        finally:
+            os.environ[SHM_ENV_VAR] = old_value
 
 
 def read_testcases(in_dir, queue):
@@ -268,6 +280,8 @@ def run_target(mem_limit, argv, trace_bits, total_execs, child_pid, out_file,
     exec_tmout_seconds = exec_tmout / 1000.0 + ((exec_tmout % 1000) / 1000000)
     signal.setitimer(signal.ITIMER_REAL, exec_tmout_seconds)
 
+    # FIXME: this part doesn't work under Python < 3.5 because of lack of
+    # proper EINTR handling. Needs a reimplementation for compatibility.
     waitpid_result, status = os.waitpid(child_pid[0], os.WUNTRACED)
     if waitpid_result <= 0:
         PFATAL("waitpid() failed")
@@ -307,7 +321,7 @@ class RunTargetTest(unittest.TestCase):
         self.child_timed_out = [True]
         self.kill_signal = [0]
         self.example_args = {
-            'mem_limit': 1,
+            'mem_limit': 100,
             'argv': ['something'],
             'trace_bits': '',  # FIXME
             'total_execs': self.total_execs,
@@ -445,7 +459,7 @@ class SHMSystemTests(unittest.TestCase):
 
     def test_run_target_nonexistent_binary(self):
         retcode = run_target(**{
-            'mem_limit': 1,
+            'mem_limit': 100,
             'argv': ['something'],
             'trace_bits': self.trace_bits,
             'total_execs': [0],
@@ -483,7 +497,7 @@ class SHMSystemTests(unittest.TestCase):
         kill_signal = [0]
         try:
             retcode = run_target(**{
-                'mem_limit': 1,
+                'mem_limit': 100,
                 'argv': ['something'],
                 'trace_bits': self.trace_bits,
                 'total_execs': [0],
@@ -501,12 +515,12 @@ class SHMSystemTests(unittest.TestCase):
 
     def test_run_target_no_error(self):
         retcode = run_target(**{
-            'mem_limit': 1,
-            'argv': ['./a.out'],
+            'mem_limit': 100,
+            'argv': ['a.out'],
             'trace_bits': self.trace_bits,
             'total_execs': [0],
             'child_pid': [0],
-            'out_file': './a.out',  # FIXME
+            'out_file': 'a.out',  # FIXME
             'out_fd': 255,
             'child_timed_out': [False],
             'exec_tmout': 100,
@@ -514,6 +528,13 @@ class SHMSystemTests(unittest.TestCase):
             'stop_soon': False,
         })
         self.assertEqual(retcode, FAULT_NONE)
+        self.assertNotEqual(bytearray(self.trace_bits),
+                            b'\x00' * len(self.trace_bits))
+
+# FIXME: this is potentially interesting - the following segfaults:
+#
+#    def test_run_target_forked(self):
+#        run_target_forked(1, 255, 255, ['a.out'])
 
 
 class ReadTestcasesSystemTests(unittest.TestCase):

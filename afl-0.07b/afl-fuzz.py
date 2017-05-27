@@ -10,8 +10,6 @@ import sys
 import unittest
 import warnings
 
-import __main__
-
 try:
     from unittest import mock
 except ImportError:
@@ -423,6 +421,16 @@ class RunTargetTest(unittest.TestCase):
 #                                                                           #
 #############################################################################
 
+# RUN_TARGET_FORKED() will behave as previously, with a 1s slowdown
+# that should trigger SIGALRM
+OLD_RUN_TARGET_FORKED = run_target_forked
+
+def MOCK_RUN_TARGET_FORKED_FN(*args, **kwargs):
+    time.sleep(1)
+    OLD_RUN_TARGET_FORKED(*args, **kwargs)
+MOCK_RUN_TARGET_FORKED = mock.Mock(side_effect=MOCK_RUN_TARGET_FORKED_FN)
+
+
 class SHMSystemTests(unittest.TestCase):
 
     def setUp(self):
@@ -475,17 +483,8 @@ class SHMSystemTests(unittest.TestCase):
         })
         self.assertEqual(retcode, FAULT_ERROR)
 
-    @mock.patch('__main__.run_target_forked')
-    def test_run_target_timeout(self, mock_run_target_forked):
-        # run_target_forked() will behave as previously, with a 1s slowdown
-        # that should trigger SIGALRM
-        old_run_target_forked = run_target_forked
-
-        def side_effect(*args, **kwargs):
-            time.sleep(1)
-            old_run_target_forked(*args, **kwargs)
-        mock_run_target_forked.side_effect = side_effect
-
+    @mock.patch.dict(globals(), {'run_target_forked': MOCK_RUN_TARGET_FORKED})
+    def test_run_target_timeout(self):
         # save SIGALRM signal handler so that we can restore it if anything
         # fails
         old_signal_handler = signal.getsignal(signal.SIGALRM)

@@ -29,6 +29,7 @@ SHM_ENV_VAR = "__AFL_SHM_ID"
 def O(x):
     return x if isinstance(x, int) else ord(x)
 
+
 if sys.version.startswith('3'):
     def to_byte(x):
         return x
@@ -127,7 +128,8 @@ class SetupSHMTest(unittest.TestCase):
 
     def test_calls_shmget(self):
         setup_shm(1)
-        self.mock_shmget.assert_called_once_with(0, 1, IPC_CREAT | IPC_EXCL | 0o600)
+        expected_args = (0, 1, IPC_CREAT | IPC_EXCL | 0o600)
+        self.mock_shmget.assert_called_once_with(*expected_args)
 
     def test_calls_shmat(self):
         setup_shm(1)
@@ -144,7 +146,8 @@ class SetupSHMTest(unittest.TestCase):
 
 
 def read_testcases(in_dir, queue):
-    """Read all testcases from the input directory, then queue them for testing."""
+    """Read all testcases from the input directory, then queue them for
+    testing."""
     for fname in os.listdir(in_dir):
         if not os.access(fname, os.R_OK):
             raise RuntimeError('Unable to open %s' % repr(fname))
@@ -153,7 +156,8 @@ def read_testcases(in_dir, queue):
             continue
         if st.st_size > MAX_FILESIZE:
             raise RuntimeError('Test case %s is too big' % repr(fname))
-        queue.append({'fname': fname, 'flen': st.st_size, 'keep': True, 'det_done': False})
+        queue.append({'fname': fname, 'flen': st.st_size,
+                      'keep': True, 'det_done': False})
     # NOTE: I removed the "No usable test cases" error - check it in main().
 
 
@@ -413,13 +417,11 @@ class RunTargetTest(unittest.TestCase):
         pass
 
 
-
 #############################################################################
 #                                                                           #
 #                            </HERE_BE_DRAGONS>                             #
 #                                                                           #
 #############################################################################
-
 
 class SHMSystemTests(unittest.TestCase):
 
@@ -478,6 +480,7 @@ class SHMSystemTests(unittest.TestCase):
         # run_target_forked() will behave as previously, with a 1s slowdown
         # that should trigger SIGALRM
         old_run_target_forked = run_target_forked
+
         def side_effect(*args, **kwargs):
             time.sleep(1)
             old_run_target_forked(*args, **kwargs)
@@ -486,6 +489,7 @@ class SHMSystemTests(unittest.TestCase):
         # save SIGALRM signal handler so that we can restore it if anything
         # fails
         old_signal_handler = signal.getsignal(signal.SIGALRM)
+
         def sigalrm_handler(*args, **kwargs):
             child_timed_out[0] = True
             if child_pid[0] > 0:

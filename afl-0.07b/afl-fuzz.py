@@ -1,13 +1,14 @@
 #!/usr/bin/env python
 
-import unittest
 import ctypes
 import os
-import sys
-import stat
 import resource
-# We need this one in order to be able to mock.patch self:
-import __main__  # NOQA
+import signal
+import time
+import stat
+import sys
+import unittest
+import warnings
 
 try:
     from unittest import mock
@@ -15,7 +16,6 @@ except ImportError:
     import mock
 
 MAX_FILESIZE = 1 * 1000 * 1000
-DEV_NULL = open(os.devnull).fileno()
 FAULT_NONE, FAULT_HANG, FAULT_CRASH, FAULT_ERROR = range(4)
 EXEC_FAIL = 0x55
 IPC_PRIVATE, IPC_CREAT, IPC_EXCL = 0, 512, 1024
@@ -221,26 +221,31 @@ class ReadTestcasesTest(unittest.TestCase):
 #############################################################################
 
 
-
 def PFATAL(*args, **kwargs):
     raise NotImplementedError()
 
 
-def set_itimer_real(tv_sec, tv_usec):
-    # ITIMER_REAL This timer counts down in real (i.e., wall clock) timer.
-    # At each expiration, a SIGALRM signal is generated.
-    #
-    # SIGALRM handler = handle_timeout, which sets child_timed_out and SIGKILLs child_pid.
+def run_target_forked(mem_limit, out_fd, out_file, argv):
+    warnings.simplefilter("ignore", ResourceWarning)
+    f = open(os.devnull)
+    DEV_NULL = f.fileno()
+    memory_limit = mem_limit << 20
+    resource.setrlimit(resource.RLIMIT_AS, (memory_limit,
+                       memory_limit))
+    os.setsid()
+    os.dup2(DEV_NULL, 1)
+    os.dup2(DEV_NULL, 2)
+    if out_file:
+        os.dup2(DEV_NULL, 0)
+    else:
+        os.dup2(out_fd, 0)
+        os.close(out_fd)
 
-    # static struct itimerval it
-    # it.it_value.tv_sec = tv_sec
-    # it.it_value.tv_usec = tv_usec
-    # setitimer(ITIMER_REAL, &it, NULL)
-    raise NotImplementedError()
-
-
-def memset(where, value, length):
-    raise NotImplementedError()
+    os.close(DEV_NULL)
+    try:
+        os.execvp(argv[0], argv)
+    finally:
+        os._exit(EXEC_FAIL)
 
 
 def run_target(mem_limit, argv, trace_bits, total_execs, child_pid, out_file,
@@ -248,37 +253,24 @@ def run_target(mem_limit, argv, trace_bits, total_execs, child_pid, out_file,
     """Execute target application, monitoring for timeouts. Return status
     information. The called program will update trace_bits[]."""
 
-    child_timed_out[0] = True
-    memset(trace_bits, 0, 65536)
+    child_timed_out[0] = False
+    ctypes.memset(trace_bits, 0, 65536)
     child_pid[0] = os.fork()
 
     if child_pid[0] < 0:
         PFATAL("fork() failed")
 
     if not child_pid[0]:
-        memory_limit = mem_limit << 20
-        resource.setrlimit(resource.RLIMIT_AS, (memory_limit, memory_limit))
-        os.setsid()
-        os.dup2(DEV_NULL, 1)
-        os.dup2(DEV_NULL, 2)
-        if out_file:
-            os.dup2(DEV_NULL, 0)
-        else:
-            os.dup2(out_fd, 0)
-            os.close(out_fd)
-
-        os.close(DEV_NULL)
-        os.execvp(argv[0], argv)
-        sys.exit(EXEC_FAIL)
-
-    set_itimer_real((exec_tmout / 1000), (exec_tmout % 1000) * 1000)
+        run_target_forked(mem_limit, out_fd, out_file, argv)
+    exec_tmout_seconds = exec_tmout / 1000.0 + ((exec_tmout % 1000) / 1000000)
+    signal.setitimer(signal.ITIMER_REAL, exec_tmout_seconds)
 
     waitpid_result, status = os.waitpid(child_pid[0], os.WUNTRACED)
     if waitpid_result <= 0:
         PFATAL("waitpid() failed")
 
     child_pid[0] = 0
-    set_itimer_real(0, 0)
+    signal.setitimer(signal.ITIMER_REAL, 0.0)
     total_execs[0] += 1
 
     # Report outcome to caller.
@@ -293,14 +285,15 @@ def run_target(mem_limit, argv, trace_bits, total_execs, child_pid, out_file,
     return FAULT_ERROR if os.WEXITSTATUS(status) == EXEC_FAIL else 0
 
 
-@mock.patch('__main__.memset', mock.Mock())
-@mock.patch('__main__.set_itimer_real', mock.Mock())
+@mock.patch('ctypes.memset', mock.Mock())
+@mock.patch('signal.setitimer', mock.Mock())
 @mock.patch('os.waitpid', mock.Mock(return_value=[1, 1]))
 @mock.patch('os.setsid', mock.Mock())
 @mock.patch('os.dup2', mock.Mock())
 @mock.patch('os.close', mock.Mock())
 @mock.patch('os.execvp', mock.Mock())
-@mock.patch('sys.exit', mock.Mock())
+@mock.patch('os._exit', mock.Mock())
+@mock.patch('resource.setrlimit', mock.Mock())
 class RunTargetTest(unittest.TestCase):
 
     def setUp(self):
@@ -308,7 +301,7 @@ class RunTargetTest(unittest.TestCase):
         self.fork_mocked = self.fork_patcher.start()
         self.total_execs = [0]
         self.child_pid = [0]
-        self.child_timed_out = [False]
+        self.child_timed_out = [True]
         self.kill_signal = [0]
         self.example_args = {
             'mem_limit': 1,
@@ -335,12 +328,140 @@ class RunTargetTest(unittest.TestCase):
         self.fork_mocked.return_value = 0
         run_target(**self.example_args)
 
+    def test_resets_child_timed_out(self):
+        run_target(**self.example_args)
+        self.assertFalse(self.child_timed_out[0])
+
+    def test_resets_trace_bits(self):
+        pass
+
+    def test_runs_pfatal_if_fork_failed(self):
+        pass
+
+    def test_sets_rlimit(self):
+        pass
+
+    def test_calls_setsid(self):
+        pass
+
+    def test_duplicates_stdout(self):
+        pass
+
+    def test_duplicates_stderr(self):
+        pass
+
+    def test_duplicates_stdin_if_out_file(self):
+        pass
+
+    def test_duplicates_out_fd_if_no_file(self):
+        pass
+
+    def test_closes_dev_null(self):
+        pass
+
+    def test_calls_execvp(self):
+        pass
+
+    def test_call_exit_after_execvp(self):
+        pass
+
+    def test_sets_timer(self):
+        pass
+
+    def test_calls_waitpit(self):
+        pass
+
+    def test_calls_pfatal_if_waitpit_failed(self):
+        pass
+
+    def test_resets_timer(self):
+        pass
+
+    def test_returns_fault_hang_if_timed_out(self):
+        pass
+
+    def test_calls_WIFSIGNALED(self):
+        pass
+
+    def test_sets_kill_signal_if_appropriate(self):
+        pass
+
+    def test_returns_fault_crash_if_appropriate(self):
+        pass
+
+    def test_returns_fault_error_if_appropriate(self):
+        pass
+
+    def test_calls_wexitstatus(self):
+        pass
+
+
 
 #############################################################################
 #                                                                           #
 #                            </HERE_BE_DRAGONS>                             #
 #                                                                           #
 #############################################################################
+
+
+class SHMSystemTests(unittest.TestCase):
+
+    def setUp(self):
+        self.shmctl = ctypes.cdll.LoadLibrary("libc.so.6").shmctl
+        self.shm_id, self.trace_bits = setup_shm(65536)
+
+    def tearDown(self):
+        self.shmctl(self.shm_id, 0, 0)
+
+    def test_count_bits_1(self):
+        self.trace_bits[1] = to_byte(0x01)
+        self.assertEqual(count_bits(self.trace_bits), 1)
+
+    def test_count_bits_2(self):
+        self.trace_bits[0] = to_byte(0x03)
+        self.assertEqual(count_bits(self.trace_bits), 2)
+
+    def test_count_bits_4095(self):
+        self.trace_bits[4095] = to_byte(0xFF)
+        self.assertEqual(count_bits(self.trace_bits), 8)
+
+    def test_count_bits_65536(self):
+        with self.assertRaises(IndexError):
+            self.trace_bits[65536] = to_byte(0xFF)
+            self.assertEqual(count_bits(self.trace_bits), 8)
+
+    def test_count_bits_and_memset(self):
+        self.trace_bits[0] = to_byte(0xFF)
+        self.trace_bits[4095] = to_byte(0xFF)
+        ctypes.memset(self.trace_bits, 0, 65536)
+        self.assertEqual(count_bits(self.trace_bits), 0)
+
+    def test_exercise_has_new_bits(self):
+        # TODO
+        pass
+
+    def test_run_target(self):
+        total_execs = [0]
+        child_pid = [0]
+        child_timed_out = [True]
+        kill_signal = [0]
+        retcode = run_target(**{
+            'mem_limit': 1,
+            'argv': ['something'],
+            'trace_bits': self.trace_bits,  # FIXME
+            'total_execs': total_execs,
+            'child_pid': child_pid,
+            'out_file': 'something',  # FIXME
+            'out_fd': 255,
+            'child_timed_out': child_timed_out,
+            'exec_tmout': 100,
+            'kill_signal': kill_signal,
+            'stop_soon': False,
+        })
+        self.assertEqual(retcode, FAULT_ERROR)
+
+class ReadTestcasesSystemTests(unittest.TestCase):
+    pass
 
 
 if __name__ == '__main__':

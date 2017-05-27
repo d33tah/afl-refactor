@@ -459,39 +459,61 @@ class SHMSystemTests(unittest.TestCase):
         })
         self.assertEqual(retcode, FAULT_ERROR)
 
-    def test_run_target_timeout(self):
+    @mock.patch('__main__.run_target_forked')
+    def test_run_target_timeout(self, mock_run_target_forked):
+        # run_target_forked() will behave as previously, with a 1s slowdown
+        # that should trigger SIGALRM
+        old_run_target_forked = run_target_forked
+        def side_effect(*args, **kwargs):
+            time.sleep(1)
+            old_run_target_forked(*args, **kwargs)
+        mock_run_target_forked.side_effect = side_effect
+
+        # save SIGALRM signal handler so that we can restore it if anything
+        # fails
         old_signal_handler = signal.getsignal(signal.SIGALRM)
-        child_timed_out = [False]
-        child_pid = [0]
         def sigalrm_handler(*args, **kwargs):
             child_timed_out[0] = True
             if child_pid[0] > 0:
                 os.kill(child_pid[0], signal.SIGKILL)
         signal.signal(signal.SIGALRM, sigalrm_handler)
+
+        child_timed_out = [False]
+        child_pid = [0]
+        kill_signal = [0]
         try:
-            old_run_target_forked = run_target_forked
-            with mock.patch('__main__.run_target_forked') as m:
-                def side_effect(*args, **kwargs):
-                    time.sleep(1)
-                    old_run_target_forked(*args, **kwargs)
-                m.side_effect = side_effect
-                retcode = run_target(**{
-                    'mem_limit': 1,
-                    'argv': ['something'],
-                    'trace_bits': self.trace_bits,  # FIXME
-                    'total_execs': [0],
-                    'child_pid': child_pid,
-                    'out_file': 'something',  # FIXME
-                    'out_fd': 255,
-                    'child_timed_out': [False],
-                    'exec_tmout': 100,
-                    'kill_signal': [0],
-                    'stop_soon': False,
-                })
+            retcode = run_target(**{
+                'mem_limit': 1,
+                'argv': ['something'],
+                'trace_bits': self.trace_bits,
+                'total_execs': [0],
+                'child_pid': child_pid,
+                'out_file': 'something',  # FIXME
+                'out_fd': 255,
+                'child_timed_out': child_timed_out,
+                'exec_tmout': 100,
+                'kill_signal': kill_signal,
+                'stop_soon': False,
+            })
             self.assertEqual(retcode, FAULT_HANG)
         finally:
             signal.signal(signal.SIGALRM, old_signal_handler)
 
+    def test_run_target_no_error(self):
+        retcode = run_target(**{
+            'mem_limit': 1,
+            'argv': ['./a.out'],
+            'trace_bits': self.trace_bits,
+            'total_execs': [0],
+            'child_pid': [0],
+            'out_file': './a.out',  # FIXME
+            'out_fd': 255,
+            'child_timed_out': [False],
+            'exec_tmout': 100,
+            'kill_signal': [0],
+            'stop_soon': False,
+        })
+        self.assertEqual(retcode, FAULT_NONE)
 
 
 class ReadTestcasesSystemTests(unittest.TestCase):

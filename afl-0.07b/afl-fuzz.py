@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 
+import collections
 import ctypes
 import os
 import resource
@@ -20,6 +21,10 @@ FAULT_NONE, FAULT_HANG, FAULT_CRASH, FAULT_ERROR = range(4)
 EXEC_FAIL = 0x55
 IPC_PRIVATE, IPC_CREAT, IPC_EXCL = 0, 512, 1024
 SHM_ENV_VAR = "__AFL_SHM_ID"
+CAL_CYCLES = 4
+
+
+QueueEntry = collections.namedtuple('QueueEntry', ['fname'])
 
 
 # we'll be working both with bytearrays and ctypes strings.
@@ -36,9 +41,8 @@ else:
         return chr(x)
 
 
-def has_new_bits(current, virgin):
-    n = min([len(current), len(virgin)])
-    for i in range(n):
+def has_new_bits(current, virgin, size):
+    for i in range(size):
         if O(current[i]) & O(virgin[i]):
             virgin[i] = to_byte(O(virgin[i]) & O(current[i]))
             return True
@@ -73,20 +77,20 @@ def setup_shm(mem_size):
 
 class HasNewBitsTest(unittest.TestCase):
     def test_returns_false_if_current_is_zero(self):
-        self.assertFalse(has_new_bits(bytearray([0]), bytearray([1])))
+        self.assertFalse(has_new_bits(bytearray([0]), bytearray([1]), 1))
 
     def test_returns_true_is_have_common_bits(self):
-        self.assertTrue(has_new_bits(bytearray([2]), bytearray([3])))
+        self.assertTrue(has_new_bits(bytearray([2]), bytearray([3]), 1))
 
     def test_updates_virgin_bits_if_common_bits(self):
         virgin = bytearray([3])
-        has_new_bits(bytearray([2]), virgin)
+        has_new_bits(bytearray([2]), virgin, 1)
         self.assertEqual(virgin[0], 2)
 
     def test_updates_virgin_bits_if_common_bits_and_virgin_is_ctypes_buf(self):
         virgin = ctypes.create_string_buffer(1)
         virgin[0] = b'\x03'
-        has_new_bits(bytearray([2]), virgin)
+        has_new_bits(bytearray([2]), virgin, 1)
         self.assertEqual(virgin[0], b'\x02')
 
 
@@ -585,6 +589,125 @@ class SHMSystemTests(unittest.TestCase):
 
 class ReadTestcasesSystemTests(unittest.TestCase):
     pass
+
+
+def FATAL(*_, **__):
+    raise NotImplementedError()
+
+
+def OKF(*_, **__):
+    raise NotImplementedError()
+
+
+def ACTF(*_, **__):
+    raise NotImplementedError()
+
+
+def perform_dry_run(queue, dumb_mode, mem_limit, argv, trace_bits, total_execs,
+                    child_pid, out_file, out_fd, child_timed_out, exec_tmout,
+                    kill_signal, stop_soon, virgin_bits):
+
+    for q in queue:
+
+        ACTF("Verifying test case '%s'...", q.fname)
+
+        if not out_file:
+            out_f = open(q.fname, 'r')
+            out_fd = out_f.fileno()
+        else:
+            try:
+                os.unlink(out_file)
+            except FileNotFoundError:
+                pass
+            if os.link(q.fname, out_file):
+                PFATAL("link() failed")
+
+        fault = run_target(mem_limit, argv, trace_bits, total_execs, child_pid,
+                           out_file, out_fd, child_timed_out, exec_tmout,
+                           kill_signal, stop_soon)
+        if stop_soon[0]:
+            return
+
+        if fault == FAULT_HANG:
+            FATAL("Test case '%s' results in a hang (adjusting -t "
+                  "may help)", q.fname)
+        elif fault == FAULT_CRASH:
+            FATAL("Test case '%s' results in a crash", q.fname)
+        elif fault == FAULT_ERROR:
+            FATAL("Unable to execute target application ('%s')", argv[0])
+
+        if not has_new_bits(trace_bits, virgin_bits, 65536) and not dumb_mode:
+            FATAL("No instrumentation detected (you can always try -n)")
+
+        # Wait long enough for any time(0)-based randomness to change.
+
+        for i in range(15):
+            if stop_soon[0]:
+                break
+            time.sleep(0.1)
+        if stop_soon[0]:
+            return
+
+        for i in range(CAL_CYCLES):
+
+            if not out_file:
+                out_f.seek(0)
+            fault = run_target(mem_limit, argv, trace_bits, total_execs,
+                               child_pid, out_file, out_fd, child_timed_out,
+                               exec_tmout)
+
+            if stop_soon[0]:
+                return
+
+            if fault == FAULT_HANG:
+                FATAL("Test case '%s' results in intermittent hangs "
+                      "(adjusting -t may help)", q.fname)
+            elif fault == FAULT_CRASH:
+                FATAL("Test case '%s' results in intermittent "
+                      "crashes", q.fname)
+            elif fault == FAULT_ERROR:
+                FATAL("Unable to execute target application (huh)")
+
+            if has_new_bits(trace_bits, virgin_bits, 65536):
+                FATAL("Inconsistent instrumentation output for test case '%s'",
+                      q.fname)
+
+        if not out_file:
+            out_f.close()
+
+        OKF("Done: %u bits set, %u remaining in the bitmap.\n",
+            count_bits(trace_bits), count_bits(virgin_bits))
+
+
+@mock.patch.dict(globals(), {'ACTF': mock.Mock()})
+class PerformDryRunSystemTests(unittest.TestCase):
+
+    def setUp(self):
+        self.shm_id, self.trace_bits = setup_shm(65536)
+        self.virgin_bits = ctypes.create_string_buffer(65536)
+        ctypes.memset(self.virgin_bits, 0, 65536)
+        self.example_args = {
+            'mem_limit': 100,
+            'argv': ['./a.out'],
+            'trace_bits': self.trace_bits,
+            'total_execs': [0],
+            'child_pid': [0],
+            'out_file': '',
+            'out_fd': 255,
+            'child_timed_out': [False],
+            'exec_tmout': 100,
+            'kill_signal': [0],
+            'stop_soon': [False],
+            'virgin_bits': self.virgin_bits,
+            'queue': [QueueEntry(fname='/dev/null')],
+            'dumb_mode': False,
+        }
+
+    def tearDown(self):
+        ctypes.cdll.LoadLibrary("libc.so.6").shmctl(self.shm_id)
+
+    def test_doesnt_crash(self):
+        perform_dry_run(**self.example_args)
 
 
 if __name__ == '__main__':

@@ -134,13 +134,9 @@ class SetupSHMTest(unittest.TestCase):
         self.mock_shmat.assert_called_once_with(0, 0, 0)
 
     def test_assigns_env_variable(self):
-        old_value = os.environ[SHM_ENV_VAR]
-        os.environ[SHM_ENV_VAR] = 'nope'
-        try:
+        with mock.patch.dict(os.environ, {SHM_ENV_VAR: 'nope'}):
             setup_shm(1)
             self.assertNotEqual(os.environ[SHM_ENV_VAR], 'nope')
-        finally:
-            os.environ[SHM_ENV_VAR] = old_value
 
 
 def read_testcases(in_dir, queue):
@@ -230,14 +226,7 @@ class ReadTestcasesTest(unittest.TestCase):
             read_testcases('.', [])
 
 
-#############################################################################
-#                                                                           #
-#                            <HERE_BE_DRAGONS>                              #
-#                                                                           #
-#############################################################################
-
-
-def PFATAL(*args, **kwargs):
+def PFATAL(*_, **__):
     raise NotImplementedError()
 
 
@@ -249,6 +238,8 @@ def run_target_forked(mem_limit, out_fd, out_file, argv):
     memory_limit = mem_limit << 20
     resource.setrlimit(resource.RLIMIT_AS, (memory_limit,
                        memory_limit))
+    # NOTE: the following three instructions will not work unless we actually
+    # fork and will silence all tracebacks. This might complicate debugging.
     os.setsid()
     os.dup2(DEV_NULL, 1)
     os.dup2(DEV_NULL, 2)
@@ -265,6 +256,76 @@ def run_target_forked(mem_limit, out_fd, out_file, argv):
         os._exit(EXEC_FAIL)
 
 
+@mock.patch('os.setsid', mock.Mock())
+@mock.patch('os.dup2', mock.Mock())
+@mock.patch('os.close', mock.Mock())
+@mock.patch('os.execvp', mock.Mock())
+@mock.patch('os._exit', mock.Mock())
+@mock.patch('resource.setrlimit', mock.Mock())
+@mock.patch.object(globals()['__builtins__'], 'open',
+                   lambda *_, **__: mock.Mock(fileno=lambda *_, **__: 9))
+class RunTargetForkedTest(unittest.TestCase):
+
+    def test_sets_rlimit(self):
+        expected = (resource.RLIMIT_AS, (100 << 20, 100 << 20))
+        with mock.patch('resource.setrlimit', mock.Mock()) as mock_rlimit:
+            run_target_forked(100, 255, None, ['./a.out'])
+            mock_rlimit.assert_called_once_with(*expected)
+
+    def test_calls_setsid(self):
+        with mock.patch('os.setsid', mock.Mock()) as mock_setsid:
+            run_target_forked(100, 255, None, ['./a.out'])
+            mock_setsid.assert_called_once_with()
+
+    def test_duplicates_stdout(self):
+        with mock.patch('os.dup2', mock.Mock()) as mock_dup2:
+            run_target_forked(100, 255, None, ['./a.out'])
+            self.assertIn(mock.call(9, 1), mock_dup2.call_args_list)
+
+    def test_duplicates_stderr(self):
+        with mock.patch('os.dup2', mock.Mock()) as mock_dup2:
+            run_target_forked(100, 255, None, ['./a.out'])
+            self.assertIn(mock.call(9, 2), mock_dup2.call_args_list)
+
+    def test_duplicates_stdin_if_out_file(self):
+        with mock.patch('os.dup2', mock.Mock()) as mock_dup2:
+            run_target_forked(100, 255, True, ['./a.out'])
+            self.assertIn(mock.call(9, 0), mock_dup2.call_args_list)
+
+    def test_duplicates_out_fd_if_no_file(self):
+        with mock.patch('os.dup2', mock.Mock()) as mock_dup2:
+            run_target_forked(100, 255, None, ['./a.out'])
+            self.assertIn(mock.call(255, 0), mock_dup2.call_args_list)
+
+    def test_closes_out_fd_if_no_file(self):
+        with mock.patch('os.close', mock.Mock()) as mock_close:
+            run_target_forked(100, 255, None, ['./a.out'])
+            self.assertIn(mock.call(255), mock_close.call_args_list)
+
+    def test_closes_dev_null(self):
+        with mock.patch('os.close', mock.Mock()) as mock_close:
+            run_target_forked(100, 255, None, ['./a.out'])
+            self.assertIn(mock.call(9), mock_close.call_args_list)
+
+    def test_calls_execvp(self):
+        with mock.patch('os.execvp', mock.Mock()) as mock_execvp:
+            argv = ['./a.out', 'arg2']
+            run_target_forked(100, 255, None, argv)
+            mock_execvp.assert_called_once_with('./a.out', argv)
+
+    def test_call_exit_after_execvp(self):
+        with mock.patch('os._exit', mock.Mock()) as mock_exit:
+            run_target_forked(100, 255, None, ['./a.out'])
+            mock_exit.assert_called_once_with(EXEC_FAIL)
+
+
+#############################################################################
+#                                                                           #
+#                            <HERE_BE_DRAGONS>                              #
+#                                                                           #
+#############################################################################
+
+
 def run_target(mem_limit, argv, trace_bits, total_execs, child_pid, out_file,
                out_fd, child_timed_out, exec_tmout, kill_signal, stop_soon):
     """Execute target application, monitoring for timeouts. Return status
@@ -274,6 +335,8 @@ def run_target(mem_limit, argv, trace_bits, total_execs, child_pid, out_file,
     ctypes.memset(trace_bits, 0, 65536)
     child_pid[0] = os.fork()
 
+    # TODO: can we actually get there? Perhaps it's enough to let it raise
+    # an exception?
     if child_pid[0] < 0:
         PFATAL("fork() failed")
 
@@ -286,6 +349,8 @@ def run_target(mem_limit, argv, trace_bits, total_execs, child_pid, out_file,
     # proper EINTR handling. Needs a reimplementation for compatibility.
     waitpid_result, status = os.waitpid(child_pid[0], os.WUNTRACED)
     if waitpid_result <= 0:
+        # TODO: can we actually get there? Perhaps it's enough to let it raise
+        # an exception?
         PFATAL("waitpid() failed")
 
     child_pid[0] = 0
@@ -307,81 +372,48 @@ def run_target(mem_limit, argv, trace_bits, total_execs, child_pid, out_file,
 @mock.patch('ctypes.memset', mock.Mock())
 @mock.patch('signal.setitimer', mock.Mock())
 @mock.patch('os.waitpid', mock.Mock(return_value=[1, 1]))
-@mock.patch('os.setsid', mock.Mock())
-@mock.patch('os.dup2', mock.Mock())
-@mock.patch('os.close', mock.Mock())
-@mock.patch('os.execvp', mock.Mock())
-@mock.patch('os._exit', mock.Mock())
-@mock.patch('resource.setrlimit', mock.Mock())
+@mock.patch('os.fork', mock.Mock(return_value=1))
+@mock.patch.dict(globals(), {'run_target_forked': mock.Mock()})
 class RunTargetTest(unittest.TestCase):
 
     def setUp(self):
-        self.fork_patcher = mock.patch('os.fork', mock.Mock(return_value=1))
-        self.fork_mocked = self.fork_patcher.start()
-        self.total_execs = [0]
-        self.child_pid = [0]
-        self.child_timed_out = [True]
-        self.kill_signal = [0]
         self.example_args = {
             'mem_limit': 100,
             'argv': ['something'],
             'trace_bits': '',  # FIXME
-            'total_execs': self.total_execs,
-            'child_pid': self.child_pid,
+            'total_execs': [0],
+            'child_pid': [0],
             'out_file': 'something',  # FIXME
             'out_fd': 255,
-            'child_timed_out': self.child_timed_out,
+            'child_timed_out': [True],
             'exec_tmout': 0,
-            'kill_signal': self.kill_signal,
+            'kill_signal': [0],
             'stop_soon': False,
         }
 
-    def tearDown(self):
-        self.fork_patcher.stop()
-
     def test_calls_fork(self):
-        run_target(**self.example_args)
-        self.fork_mocked.assert_called_once_with()
+        with mock.patch('os.fork', mock.Mock(return_value=1)) as fork_mocked:
+            run_target(**self.example_args)
+            fork_mocked.assert_called_once_with()
 
     def test_doesnt_crash_in_forked_process(self):
-        self.fork_mocked.return_value = 0
-        run_target(**self.example_args)
+        with mock.patch('os.fork', mock.Mock(return_value=0)):
+            run_target(**self.example_args)
 
     def test_resets_child_timed_out(self):
+        child_timed_out = [True]
+        self.example_args['child_timed_out'] = child_timed_out
         run_target(**self.example_args)
-        self.assertFalse(self.child_timed_out[0])
-
-    def test_resets_trace_bits(self):
-        pass
+        self.assertFalse(child_timed_out[0])
 
     def test_runs_pfatal_if_fork_failed(self):
-        pass
+        mock_pfatal = mock.Mock()
+        with mock.patch('os.fork', mock.Mock(return_value=-1)):
+            with mock.patch.dict(globals(), {'PFATAL': mock_pfatal}):
+                run_target(**self.example_args)
+                mock_pfatal.assert_called_once_with('fork() failed')
 
-    def test_sets_rlimit(self):
-        pass
-
-    def test_calls_setsid(self):
-        pass
-
-    def test_duplicates_stdout(self):
-        pass
-
-    def test_duplicates_stderr(self):
-        pass
-
-    def test_duplicates_stdin_if_out_file(self):
-        pass
-
-    def test_duplicates_out_fd_if_no_file(self):
-        pass
-
-    def test_closes_dev_null(self):
-        pass
-
-    def test_calls_execvp(self):
-        pass
-
-    def test_call_exit_after_execvp(self):
+    def test_resets_trace_bits(self):
         pass
 
     def test_sets_timer(self):
@@ -425,9 +457,12 @@ class RunTargetTest(unittest.TestCase):
 # that should trigger SIGALRM
 OLD_RUN_TARGET_FORKED = run_target_forked
 
+
 def MOCK_RUN_TARGET_FORKED_FN(*args, **kwargs):
     time.sleep(1)
     OLD_RUN_TARGET_FORKED(*args, **kwargs)
+
+
 MOCK_RUN_TARGET_FORKED = mock.Mock(side_effect=MOCK_RUN_TARGET_FORKED_FN)
 
 
@@ -490,7 +525,7 @@ class SHMSystemTests(unittest.TestCase):
         # fails
         old_signal_handler = signal.getsignal(signal.SIGALRM)
 
-        def sigalrm_handler(*args, **kwargs):
+        def sigalrm_handler(*_, **__):
             child_timed_out[0] = True
             if child_pid[0] > 0:
                 os.kill(child_pid[0], signal.SIGKILL)
@@ -511,11 +546,19 @@ class SHMSystemTests(unittest.TestCase):
             signal.signal(signal.SIGALRM, old_signal_handler)
 
     def test_run_target_no_error(self):
-        self.run_target_args['argv'] = ['a.out']
+        self.run_target_args['argv'] = ['./a.out']
         retcode = run_target(**self.run_target_args)
         self.assertEqual(retcode, FAULT_NONE)
         self.assertNotEqual(bytearray(self.trace_bits),
                             b'\x00' * len(self.trace_bits))
+
+    def test_run_target_crash(self):
+        def kill_self(*_, **__):
+            os.kill(os.getpid(), signal.SIGKILL)
+
+        with mock.patch.dict(globals(), {'run_target_forked': kill_self}):
+            retcode = run_target(**self.run_target_args)
+            self.assertEqual(retcode, FAULT_CRASH)
 
 
 class ReadTestcasesSystemTests(unittest.TestCase):
@@ -523,4 +566,5 @@ class ReadTestcasesSystemTests(unittest.TestCase):
 
 
 if __name__ == '__main__':
+    # run_target_forked(1, open('/etc/fstab').fileno(), None, ['./a.out'])
     unittest.main()

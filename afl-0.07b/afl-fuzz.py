@@ -83,7 +83,7 @@ class HasNewBitsTest(unittest.TestCase):
         has_new_bits(bytearray([2]), virgin)
         self.assertEqual(virgin[0], 2)
 
-    def test_updates_virgin_bits_if_common_bits_and_virgin_is_ctypes_string(self):
+    def test_updates_virgin_bits_if_common_bits_and_virgin_is_ctypes_buf(self):
         virgin = ctypes.create_string_buffer(1)
         virgin[0] = b'\x03'
         has_new_bits(bytearray([2]), virgin)
@@ -262,6 +262,7 @@ def run_target_forked(mem_limit, out_fd, out_file, argv):
 @mock.patch('os.execvp', mock.Mock())
 @mock.patch('os._exit', mock.Mock())
 @mock.patch('resource.setrlimit', mock.Mock())
+# FIXME: nosetests doesn't like the following:
 @mock.patch.object(globals()['__builtins__'], 'open',
                    lambda *_, **__: mock.Mock(fileno=lambda *_, **__: 9))
 class RunTargetForkedTest(unittest.TestCase):
@@ -319,13 +320,6 @@ class RunTargetForkedTest(unittest.TestCase):
             mock_exit.assert_called_once_with(EXEC_FAIL)
 
 
-#############################################################################
-#                                                                           #
-#                            <HERE_BE_DRAGONS>                              #
-#                                                                           #
-#############################################################################
-
-
 def run_target(mem_limit, argv, trace_bits, total_execs, child_pid, out_file,
                out_fd, child_timed_out, exec_tmout, kill_signal, stop_soon):
     """Execute target application, monitoring for timeouts. Return status
@@ -362,17 +356,20 @@ def run_target(mem_limit, argv, trace_bits, total_execs, child_pid, out_file,
     if child_timed_out[0]:
         return FAULT_HANG
 
-    if os.WIFSIGNALED(status) and not stop_soon:
+    if os.WIFSIGNALED(status) and not stop_soon[0]:
         kill_signal[0] = os.WTERMSIG(status)
         return FAULT_CRASH
 
-    return FAULT_ERROR if os.WEXITSTATUS(status) == EXEC_FAIL else 0
+    return FAULT_ERROR if os.WEXITSTATUS(status) == EXEC_FAIL else FAULT_NONE
 
 
 @mock.patch('ctypes.memset', mock.Mock())
 @mock.patch('signal.setitimer', mock.Mock())
-@mock.patch('os.waitpid', mock.Mock(return_value=[1, 1]))
+@mock.patch('os.waitpid', mock.Mock(return_value=[1, 'status']))
 @mock.patch('os.fork', mock.Mock(return_value=1))
+@mock.patch('os.WIFSIGNALED', mock.Mock(return_value=1))
+@mock.patch('os.WEXITSTATUS', mock.Mock(return_value=EXEC_FAIL))
+@mock.patch('os.WTERMSIG', mock.Mock(return_value=11))
 @mock.patch.dict(globals(), {'run_target_forked': mock.Mock()})
 class RunTargetTest(unittest.TestCase):
 
@@ -380,15 +377,15 @@ class RunTargetTest(unittest.TestCase):
         self.example_args = {
             'mem_limit': 100,
             'argv': ['something'],
-            'trace_bits': '',  # FIXME
+            'trace_bits': '',
             'total_execs': [0],
             'child_pid': [0],
-            'out_file': 'something',  # FIXME
+            'out_file': 'something',
             'out_fd': 255,
             'child_timed_out': [True],
-            'exec_tmout': 0,
+            'exec_tmout': 200,
             'kill_signal': [0],
-            'stop_soon': False,
+            'stop_soon': [False],
         }
 
     def test_calls_fork(self):
@@ -414,44 +411,69 @@ class RunTargetTest(unittest.TestCase):
                 mock_pfatal.assert_called_once_with('fork() failed')
 
     def test_resets_trace_bits(self):
-        pass
+        self.example_args['trace_bits'] = 'hello there'
+        with mock.patch('ctypes.memset') as mock_ctypes:
+            run_target(**self.example_args)
+            mock_ctypes.assert_called_once_with('hello there', 0, 65536)
 
-    def test_sets_timer(self):
-        pass
+    def test_sets_timer_then_resets_it(self):
+        first_timer_secs = 0.20020000000000002
+        with mock.patch('signal.setitimer') as mock_setitimer:
+            run_target(**self.example_args)
+            self.assertEqual([mock.call(signal.ITIMER_REAL, first_timer_secs),
+                              mock.call(signal.ITIMER_REAL, 0.0)],
+                             mock_setitimer.call_args_list)
 
-    def test_calls_waitpit(self):
-        pass
-
-    def test_calls_pfatal_if_waitpit_failed(self):
-        pass
-
-    def test_resets_timer(self):
-        pass
-
-    def test_returns_fault_hang_if_timed_out(self):
-        pass
+    def test_calls_waitpid(self):
+        mock_waitpid = mock.Mock(return_value=[1, 'status'])
+        with mock.patch('os.waitpid', mock_waitpid):
+            run_target(**self.example_args)
+            mock_waitpid.assert_called_once_with(1, os.WUNTRACED)
 
     def test_calls_WIFSIGNALED(self):
-        pass
+        with mock.patch('os.WIFSIGNALED') as mock_wifsignaled:
+            run_target(**self.example_args)
+            mock_wifsignaled.assert_called_once_with('status')
 
-    def test_sets_kill_signal_if_appropriate(self):
-        pass
+    def test_sets_kill_signal_if_wifsignaled_and_not_stop_soon(self):
+        kill_signal = [0]
+        self.example_args['kill_signal'] = kill_signal
+        run_target(**self.example_args)
+        self.assertEqual(kill_signal[0], 11)
+
+    def test_doesnt_set_kill_signal_if_not_stop_soon(self):
+        with mock.patch('os.WTERMSIG', mock.Mock(return_value=0)):
+            kill_signal = [0]
+            self.example_args['kill_signal'] = kill_signal
+            run_target(**self.example_args)
+            self.assertEqual(kill_signal[0], 0)
+
+    def test_doesnt_set_kill_signal_if_not_wifsignaled(self):
+        with mock.patch('os.WTERMSIG', mock.Mock(return_value=0)):
+            kill_signal = [0]
+            self.example_args['kill_signal'] = kill_signal
+            run_target(**self.example_args)
+            self.assertEqual(kill_signal[0], 0)
+
+    def test_returns_fault_hang_if_timed_out(self):
+        class always_true(list):
+            def __getitem__(*_, **__):
+                return True
+        self.example_args['child_timed_out'] = always_true([True])
+        self.assertEqual(run_target(**self.example_args), FAULT_HANG)
 
     def test_returns_fault_crash_if_appropriate(self):
-        pass
+        self.assertEqual(run_target(**self.example_args), FAULT_CRASH)
 
     def test_returns_fault_error_if_appropriate(self):
-        pass
+        with mock.patch('os.WIFSIGNALED', mock.Mock(return_value=0)):
+            self.assertEqual(run_target(**self.example_args), FAULT_ERROR)
 
-    def test_calls_wexitstatus(self):
-        pass
+    def test_returns_fault_none_if_appropriate(self):
+        with mock.patch('os.WIFSIGNALED', mock.Mock(return_value=0)):
+            with mock.patch('os.WEXITSTATUS', mock.Mock(return_value=0)):
+                self.assertEqual(run_target(**self.example_args), FAULT_NONE)
 
-
-#############################################################################
-#                                                                           #
-#                            </HERE_BE_DRAGONS>                             #
-#                                                                           #
-#############################################################################
 
 # RUN_TARGET_FORKED() will behave as previously, with a 1s slowdown
 # that should trigger SIGALRM
@@ -482,7 +504,7 @@ class SHMSystemTests(unittest.TestCase):
             'child_timed_out': [False],
             'exec_tmout': 100,
             'kill_signal': [0],
-            'stop_soon': False,
+            'stop_soon': [False],
         }
 
     def tearDown(self):

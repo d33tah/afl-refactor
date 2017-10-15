@@ -737,12 +737,14 @@ class PerformDryRunSystemTests(unittest.TestCase):
         }
 
     def tearDown(self):
-        ctypes.cdll.LoadLibrary("libc.so.6").shmctl(self.shm_id)
+        ctypes.cdll.LoadLibrary("libc.so.6").shmctl(self.shm_id, 0, 0)
+        self.out_f.close()
 
     def test_doesnt_crash(self):
         perform_dry_run(**self.example_args)
 
 
 if __name__ == '__main__':
-    # run_target_forked(1, open('/etc/fstab').fileno(), None, ['./a.out'])
+    # fstab_f = open('/etc/fstab')
+    # run_target_forked(1, fstab_f.fileno(), None, ['./set_shm.py'], True)
     unittest.main()

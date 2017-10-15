@@ -591,11 +591,23 @@ class SHMSystemTests(unittest.TestCase):
             signal.signal(signal.SIGALRM, old_signal_handler)
 
     def test_run_target_no_error(self):
-        self.run_target_args['argv'] = ['./a.out']
+        self.run_target_args['argv'] = ['./set_shm.py']
         retcode = run_target(**self.run_target_args)
         self.assertEqual(retcode, FAULT_NONE)
         self.assertNotEqual(bytearray(self.trace_bits),
                             b'\x00' * len(self.trace_bits))
+
+    def test_run_target_no_error_no_out_file(self):
+        self.run_target_args['out_file'] = ''
+        with open('/dev/null') as f:
+            self.run_target_args['out_fd'] = f.fileno()
+            self.run_target_args['argv'] = ['./set_shm.py']
+            retcode = run_target(**self.run_target_args)
+            self.assertEqual(retcode, FAULT_NONE)
+            self.assertNotEqual(bytearray(self.trace_bits),
+                                b'\x00' * len(self.trace_bits))
+
+
 
     def test_run_target_crash(self):
         def kill_self(*_, **__):

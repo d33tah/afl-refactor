@@ -515,7 +515,6 @@ MOCK_RUN_TARGET_FORKED = mock.Mock(side_effect=MOCK_RUN_TARGET_FORKED_FN)
 class SHMSystemTests(unittest.TestCase):
 
     def setUp(self):
-        self.shmctl = ctypes.cdll.LoadLibrary("libc.so.6").shmctl
         self.shm_id, self.trace_bits = setup_shm(65536)
         self.run_target_args = {
             'mem_limit': 100,
@@ -532,7 +531,7 @@ class SHMSystemTests(unittest.TestCase):
         }
 
     def tearDown(self):
-        self.shmctl(self.shm_id, 0, 0)
+        ctypes.cdll.LoadLibrary("libc.so.6").shmctl(self.shm_id, 0, 0)
 
     def test_count_bits_1(self):
         self.trace_bits[1] = to_byte(0x01)

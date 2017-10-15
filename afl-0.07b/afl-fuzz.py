@@ -290,53 +290,53 @@ class RunTargetForkedTest(unittest.TestCase):
     def test_sets_rlimit(self):
         expected = (resource.RLIMIT_AS, (100 << 20, 100 << 20))
         with mock.patch('resource.setrlimit', mock.Mock()) as mock_rlimit:
-            run_target_forked(100, 255, None, ['./a.out'])
+            run_target_forked(100, 255, None, ['./set_shm.py'])
             mock_rlimit.assert_called_once_with(*expected)
 
     def test_calls_setsid(self):
         with mock.patch('os.setsid', mock.Mock()) as mock_setsid:
-            run_target_forked(100, 255, None, ['./a.out'])
+            run_target_forked(100, 255, None, ['./set_shm.py'])
             mock_setsid.assert_called_once_with()
 
     def test_duplicates_stdout(self):
         with mock.patch('os.dup2', mock.Mock()) as mock_dup2:
-            run_target_forked(100, 255, None, ['./a.out'])
+            run_target_forked(100, 255, None, ['./set_shm.py'])
             self.assertIn(mock.call(9, 1), mock_dup2.call_args_list)
 
     def test_duplicates_stderr(self):
         with mock.patch('os.dup2', mock.Mock()) as mock_dup2:
-            run_target_forked(100, 255, None, ['./a.out'])
+            run_target_forked(100, 255, None, ['./set_shm.py'])
             self.assertIn(mock.call(9, 2), mock_dup2.call_args_list)
 
     def test_duplicates_stdin_if_out_file(self):
         with mock.patch('os.dup2', mock.Mock()) as mock_dup2:
-            run_target_forked(100, 255, True, ['./a.out'])
+            run_target_forked(100, 255, True, ['./set_shm.py'])
             self.assertIn(mock.call(9, 0), mock_dup2.call_args_list)
 
     def test_duplicates_out_fd_if_no_file(self):
         with mock.patch('os.dup2', mock.Mock()) as mock_dup2:
-            run_target_forked(100, 255, None, ['./a.out'])
+            run_target_forked(100, 255, None, ['./set_shm.py'])
             self.assertIn(mock.call(255, 0), mock_dup2.call_args_list)
 
     def test_closes_out_fd_if_no_file(self):
         with mock.patch('os.close', mock.Mock()) as mock_close:
-            run_target_forked(100, 255, None, ['./a.out'])
+            run_target_forked(100, 255, None, ['./set_shm.py'])
             self.assertIn(mock.call(255), mock_close.call_args_list)
 
     def test_closes_dev_null(self):
         with mock.patch('os.close', mock.Mock()) as mock_close:
-            run_target_forked(100, 255, None, ['./a.out'])
+            run_target_forked(100, 255, None, ['./set_shm.py'])
             self.assertIn(mock.call(9), mock_close.call_args_list)
 
     def test_calls_execvp(self):
         with mock.patch('os.execvp', mock.Mock()) as mock_execvp:
-            argv = ['./a.out', 'arg2']
+            argv = ['./set_shm.py', 'arg2']
             run_target_forked(100, 255, None, argv)
-            mock_execvp.assert_called_once_with('./a.out', argv)
+            mock_execvp.assert_called_once_with('./set_shm.py', argv)
 
     def test_call_exit_after_execvp(self):
         with mock.patch('os._exit', mock.Mock()) as mock_exit:
-            run_target_forked(100, 255, None, ['./a.out'])
+            run_target_forked(100, 255, None, ['./set_shm.py'])
             mock_exit.assert_called_once_with(EXEC_FAIL)
 
 

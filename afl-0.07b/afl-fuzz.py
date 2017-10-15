@@ -394,6 +394,7 @@ def run_target(mem_limit, argv, trace_bits, total_execs, child_pid, out_file,
 class RunTargetTest(unittest.TestCase):
 
     def setUp(self):
+        self.devnull_f = open(os.devnull)
         self.example_args = {
             'mem_limit': 100,
             'argv': ['something'],
@@ -401,12 +402,15 @@ class RunTargetTest(unittest.TestCase):
             'total_execs': [0],
             'child_pid': [0],
             'out_file': 'something',
-            'out_fd': 255,
+            'out_fd': self.devnull_f.fileno(),
             'child_timed_out': [True],
             'exec_tmout': 200,
             'kill_signal': [0],
             'stop_soon': [False],
         }
+
+    def tearDown(self):
+        self.devnull_f.close()
 
     def test_calls_fork(self):
         with mock.patch('os.fork', mock.Mock(return_value=1)) as fork_mocked:

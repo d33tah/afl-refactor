@@ -718,14 +718,15 @@ class PerformDryRunSystemTests(unittest.TestCase):
         self.shm_id, self.trace_bits = setup_shm(65536)
         self.virgin_bits = ctypes.create_string_buffer(65536)
         ctypes.memset(self.virgin_bits, 255, 65536)
+        self.out_f = open(os.devnull)
         self.example_args = {
             'mem_limit': 100,
-            'argv': ['./a.out'],
+            'argv': ['./set_shm.py'],
             'trace_bits': self.trace_bits,
             'total_execs': [0],
             'child_pid': [0],
             'out_file': '',
-            'out_fd': 255,
+            'out_fd': self.out_f.fileno(),
             'child_timed_out': [False],
             'exec_tmout': 100,
             'kill_signal': [0],

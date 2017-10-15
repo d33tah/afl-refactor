@@ -111,6 +111,19 @@ class CountBitsTest(unittest.TestCase):
         buf[1] = b'\x07'
         self.assertEqual(4, count_bits(buf))
 
+    def test_returns_four_for_one_and_seven_and_buf_is_ctypes_string(self):
+        buf = ctypes.create_string_buffer(2)
+        buf[0] = b'\x01'
+        buf[1] = b'\x07'
+        self.assertEqual(4, count_bits(buf))
+
+    def test_looks_after_null_byte(self):
+        virgin = ctypes.create_string_buffer(2)
+        virgin[0] = b'\x00'
+        virgin[0] = b'\x03'
+        self.assertEqual(2, count_bits(virgin))
+
+
 
 class SetupSHMTest(unittest.TestCase):
 

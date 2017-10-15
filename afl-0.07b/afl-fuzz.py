@@ -683,9 +683,10 @@ def perform_dry_run(queue, dumb_mode, mem_limit, argv, trace_bits, total_execs,
 
             if not out_file:
                 out_f.seek(0)
+
             fault = run_target(mem_limit, argv, trace_bits, total_execs,
                                child_pid, out_file, out_fd, child_timed_out,
-                               exec_tmout)
+                               exec_tmout, kill_signal, stop_soon)
 
             if stop_soon[0]:
                 return

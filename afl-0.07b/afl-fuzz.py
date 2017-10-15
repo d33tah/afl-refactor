@@ -45,7 +45,7 @@ def has_new_bits(current, virgin, size):
     ret = False
     for i in range(size):
         if O(current[i]) & O(virgin[i]):
-            virgin[i] = to_byte(O(virgin[i]) & O(current[i]))
+            virgin[i] = to_byte(O(virgin[i]) & ~O(current[i]))
             ret = True
     return ret
 

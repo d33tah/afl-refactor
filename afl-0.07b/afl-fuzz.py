@@ -248,7 +248,7 @@ def PFATAL(*_, **__):
     raise NotImplementedError()
 
 
-def run_target_forked(mem_limit, out_fd, out_file, argv):
+def run_target_forked(mem_limit, out_fd, out_file, argv, debug_mode=False):
     if sys.version.startswith('3'):
         warnings.simplefilter("ignore", ResourceWarning)
     f = open(os.devnull)
@@ -258,9 +258,11 @@ def run_target_forked(mem_limit, out_fd, out_file, argv):
                        memory_limit))
     # NOTE: the following three instructions will not work unless we actually
     # fork and will silence all tracebacks. This might complicate debugging.
-    os.setsid()
-    os.dup2(DEV_NULL, 1)
-    os.dup2(DEV_NULL, 2)
+    if not debug_mode:
+        os.setsid()
+        os.dup2(DEV_NULL, 1)
+        os.dup2(DEV_NULL, 2)
+
     if out_file:
         os.dup2(DEV_NULL, 0)
     else:

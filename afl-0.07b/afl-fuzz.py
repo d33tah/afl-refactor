@@ -717,7 +717,7 @@ class PerformDryRunSystemTests(unittest.TestCase):
     def setUp(self):
         self.shm_id, self.trace_bits = setup_shm(65536)
         self.virgin_bits = ctypes.create_string_buffer(65536)
-        ctypes.memset(self.virgin_bits, 0, 65536)
+        ctypes.memset(self.virgin_bits, 255, 65536)
         self.example_args = {
             'mem_limit': 100,
             'argv': ['./a.out'],

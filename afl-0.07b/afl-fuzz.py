@@ -24,7 +24,7 @@ SHM_ENV_VAR = "__AFL_SHM_ID"
 CAL_CYCLES = 4
 
 
-QueueEntry = collections.namedtuple('QueueEntry', ['fname'])
+QueueEntry = collections.namedtuple('QueueEntry', ['fname', 'keep'])
 
 
 # we'll be working both with bytearrays and ctypes strings.
@@ -116,7 +116,6 @@ class CountBitsTest(unittest.TestCase):
         virgin[0] = b'\x00'
         virgin[0] = b'\x03'
         self.assertEqual(2, count_bits(virgin))
-
 
 
 class SetupSHMTest(unittest.TestCase):
@@ -601,8 +600,6 @@ class SHMSystemTests(unittest.TestCase):
             self.assertNotEqual(bytearray(self.trace_bits),
                                 b'\x00' * len(self.trace_bits))
 
-
-
     def test_run_target_crash(self):
         def kill_self(*_, **__):
             os.kill(os.getpid(), signal.SIGKILL)
@@ -613,7 +610,7 @@ class SHMSystemTests(unittest.TestCase):
 
 
 class ReadTestcasesSystemTests(unittest.TestCase):
-    pass
+    pass  # TODO
 
 
 def FATAL(*_, **__):
@@ -726,7 +723,7 @@ class PerformDryRunSystemTests(unittest.TestCase):
             'kill_signal': [0],
             'stop_soon': [False],
             'virgin_bits': self.virgin_bits,
-            'queue': [QueueEntry(fname='/dev/null')],
+            'queue': [QueueEntry(fname='/dev/null', keep=0)],
             'dumb_mode': False,
         }
 
@@ -734,8 +731,215 @@ class PerformDryRunSystemTests(unittest.TestCase):
         ctypes.cdll.LoadLibrary("libc.so.6").shmctl(self.shm_id, 0, 0)
         self.out_f.close()
 
+    @mock.patch.dict(globals(), {'OKF': mock.Mock()})
     def test_doesnt_crash(self):
         perform_dry_run(**self.example_args)
+
+
+def write_to_testcase(mem, out_fd, out_file):
+    """Write modified data to file for testing. If out_file is set, the old
+    file is unlinked and a new one is created. Otherwise, out_fd is rewound and
+    truncated."""
+    fd = out_fd
+
+    if not out_file:
+        os.lseek(fd, 0, os.SEEK_SET)
+    else:
+        try:
+            os.unlink(out_file)
+        except OSError:
+            pass
+        fd = os.open(out_file, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        if fd < 0:
+            PFATAL("Unable to create '%s'", out_file)
+
+    if os.write(fd, mem) != len(mem):
+        PFATAL("Short write to output file")
+
+    if not out_file:
+        if os.ftruncate(fd, len(mem)):
+            PFATAL("ftruncate() failed")
+        os.lseek(fd, 0, os.SEEK_SET)
+    else:
+        os.close(fd)
+
+
+class WriteToTestcaseTest(unittest.TestCase):
+    pass  # TODO
+
+
+def save_if_interesting(mem, fault, out_dir, total_hangs, total_crashes,
+                        unique_queued, kill_signal, queue):
+    """Check if the result of a test run is interesting, save or queue the
+    input test case for further analysis if so."""
+
+    fn = ""
+    if fault == FAULT_NONE:
+        if not has_new_bits():
+            return
+        fn = "%s/queue/%d" % (out_dir, unique_queued[0])
+        queue.append(QueueEntry(fname=fn, keep=0))
+    elif fault == FAULT_HANG:
+        fn = "%s/hangs/%d" % (out_dir, total_hangs[0])
+        total_hangs[0] += 1
+    elif fault == FAULT_CRASH:
+        fn = "%s/crashes/%d-signal%d" % (out_dir, total_crashes[0],
+                                         kill_signal)
+        total_crashes[0] += 1
+    elif fault == FAULT_ERROR:
+        FATAL("Unable to execute target application")
+    else:
+        FATAL("Unexpected fault code: %r" % fault)
+
+    open_flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW
+    fd = os.open(fn, open_flags, 0o600)
+
+    if fd < 0:
+        PFATAL("Unable to create '%s'\n", fn)
+
+    if os.write(fd, mem) != len(mem):
+        PFATAL("Short write to '%s'", fn)
+
+    os.close(fd)
+
+
+class SaveIfInterestingTest(unittest.TestCase):
+    pass  # TODO
+
+
+def common_fuzz_stuff(argv, out_buf):
+
+    write_to_testcase(out_buf)
+    fault = run_target(argv)
+
+    if stop_soon:
+        return 1
+
+    # TODO: compare this against C code, postincrementations made it a bit
+    # tricky and I was quite tired
+    if fault == FAULT_HANG:
+        subseq_hangs += 1
+        if subseq_hangs > HANG_LIMIT:
+            return 1
+    else:
+        subseq_hangs = 0
+
+    save_if_interesting(out_buf, fault)
+
+    if stage_cur % 100 or stage_cur + 1 == stage_max:
+        show_stats()
+
+    return 0
+
+
+def handle_stop_sig(sig):
+    """Handle stop signal (Ctrl-C, etc)."""
+    stop_soon = 1
+    if child_pid > 0:
+        os.kill(child_pid, os.SIGKILL)
+
+
+def handle_timeout(sig):
+    """Handle timeout."""
+
+    child_timed_out = 1
+    if child_pid > 0:
+        os.kill(child_pid, os.SIGKILL)
+
+
+def setup_dirs():
+    """Prepare output directories."""
+
+    if os.mkdir(out_dir, 0700) and errno != os.EEXIST:
+        PFATAL("Unable to create '%s'", out_dir)
+
+    tmp = "%s/queue" % out_dir
+    if os.mkdir(tmp, 0700):
+        PFATAL("Unable to create '%s' (delete existing directories first)",
+               tmp)
+
+    tmp = "%s/crashes" % out_dir
+    if os.mkdir(tmp, 0700):
+        PFATAL("Unable to create '%s' (delete existing directories first)",
+               tmp)
+
+    tmp = "%s/hangs", out_dir
+    if os.mkdir(tmp, 0700):
+        PFATAL("Unable to create '%s' (delete existing directories first)",
+               tmp)
+
+
+def setup_stdio_file():
+    fn = "%s/.cur_input" % out_dir
+    os.unlink(fn)
+    out_fd = os.open(fn, os.O_RDWR | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+                     0o600)
+    if out_fd < 0:
+        PFATAL("Unable to create '%s'", fn)
+
+
+def handle_resize(sig):
+    """Handle screen resize."""
+    clear_screen = 1
+
+
+def main(argv):
+    """Main entry point"""
+
+    SAYF(cCYA + "afl-fuzz " + cBRI + VERSION + cNOR + " (" + __DATE__ + " " +
+         __TIME__ + ") by <lcamtuf@google.com>\n")
+
+    signal(SIGHUP, handle_stop_sig)
+    signal(SIGINT, handle_stop_sig)
+    signal(SIGTERM, handle_stop_sig)
+    signal(SIGALRM, handle_timeout)
+    signal(SIGWINCH, handle_resize)
+
+    signal(SIGTSTP, SIG_IGN)
+    signal(SIGPIPE, SIG_IGN)
+
+    # TODO: getopt part
+
+    dev_null = os.open("/dev/null", os.O_RDWR)
+    if dev_null < 0:
+        PFATAL("Unable to open /dev/null")
+
+    setup_shm()
+    setup_dirs()
+    read_testcases()
+    perform_dry_run(argv)
+
+    if not stop_soon:
+        if not out_file:
+            setup_stdio_file()
+
+    SAYF(TERM_CLEAR)
+
+    while not stop_soon:
+        if not queue_cur:
+            queue_cycle += 1
+            unique_processed = 0
+            abandoned_inputs = 0
+            queue_cur = queue
+            show_stats()
+
+        fuzz_one(argv)
+        queue_cur = queue_cur.next
+
+        if clear_screen:
+            SAYF(TERM_CLEAR)
+            show_stats()
+            clear_screen = 0
+
+    show_stats()
+
+    if stop_soon:
+        SAYF(cLRD + "\n+++ Testing aborted by user +++\n" + cRST)
+
+    destroy_queue()
+    alloc_report()
+    OKF("We're done here. Have a nice day!")
+    exit(0)
 
 
 if __name__ == '__main__':

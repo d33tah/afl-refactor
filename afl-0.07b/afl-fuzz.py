@@ -527,9 +527,12 @@ class SHMSystemTests(unittest.TestCase):
             'kill_signal': [0],
             'stop_soon': [False],
         }
+        self.old_signal_handler = signal.getsignal(signal.SIGALRM)
+        signal.signal(signal.SIGALRM, lambda *a, **kw: None)
 
     def tearDown(self):
         ctypes.cdll.LoadLibrary("libc.so.6").shmctl(self.shm_id, 0, 0)
+        signal.signal(signal.SIGALRM, self.old_signal_handler)
 
     def test_count_bits_1(self):
         self.trace_bits[1] = to_byte(0x01)
@@ -564,29 +567,22 @@ class SHMSystemTests(unittest.TestCase):
 
     @mock.patch.dict(globals(), {'run_target_forked': MOCK_RUN_TARGET_FORKED})
     def test_run_target_timeout(self):
-        # save SIGALRM signal handler so that we can restore it if anything
-        # fails
-        old_signal_handler = signal.getsignal(signal.SIGALRM)
-
         def sigalrm_handler(*_, **__):
             child_timed_out[0] = True
             if child_pid[0] > 0:
                 os.kill(child_pid[0], signal.SIGKILL)
         signal.signal(signal.SIGALRM, sigalrm_handler)
 
-        try:
-            child_timed_out = [False]
-            child_pid = [0]
-            kill_signal = [0]
-            self.run_target_args.update({
-                'child_pid': child_pid,
-                'kill_signal': kill_signal,
-                'child_timed_out': child_timed_out,
-            })
-            retcode = run_target(**self.run_target_args)
-            self.assertEqual(retcode, FAULT_HANG)
-        finally:
-            signal.signal(signal.SIGALRM, old_signal_handler)
+        child_timed_out = [False]
+        child_pid = [0]
+        kill_signal = [0]
+        self.run_target_args.update({
+            'child_pid': child_pid,
+            'kill_signal': kill_signal,
+            'child_timed_out': child_timed_out,
+        })
+        retcode = run_target(**self.run_target_args)
+        self.assertEqual(retcode, FAULT_HANG)
 
     def test_run_target_no_error(self):
         self.run_target_args['argv'] = ['./set_shm.py']

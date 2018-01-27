@@ -22,6 +22,7 @@ EXEC_FAIL = 0x55
 IPC_PRIVATE, IPC_CREAT, IPC_EXCL = 0, 512, 1024
 SHM_ENV_VAR = "__AFL_SHM_ID"
 CAL_CYCLES = 4
+HANG_LIMIT = 20
 
 
 QueueEntry = collections.namedtuple('QueueEntry', ['fname', 'keep'])
@@ -164,6 +165,10 @@ def read_testcases(in_dir, queue):
         queue.append({'fname': fname, 'flen': st.st_size,
                       'keep': True, 'det_done': False})
     # NOTE: I removed the "No usable test cases" error - check it in main().
+
+
+class ReadTestcasesSystemTests(unittest.TestCase):
+    pass  # TODO
 
 
 class ReadTestcasesTest(unittest.TestCase):
@@ -609,10 +614,6 @@ class SHMSystemTests(unittest.TestCase):
             self.assertEqual(retcode, FAULT_CRASH)
 
 
-class ReadTestcasesSystemTests(unittest.TestCase):
-    pass  # TODO
-
-
 def FATAL(*_, **__):
     raise NotImplementedError()
 
@@ -807,27 +808,33 @@ class SaveIfInterestingTest(unittest.TestCase):
     pass  # TODO
 
 
-def common_fuzz_stuff(argv, out_buf):
+def show_stats():
+    raise NotImplementedError  # TODO: too boring, implement later
+
+
+def common_fuzz_stuff(argv, out_buf, stop_soon, subseq_hangs, stage_cur,
+                      stage_max, abandoned_inputs):
 
     write_to_testcase(out_buf)
     fault = run_target(argv)
 
-    if stop_soon:
+    if stop_soon[0]:
         return 1
 
     # TODO: compare this against C code, postincrementations made it a bit
     # tricky and I was quite tired
     if fault == FAULT_HANG:
-        subseq_hangs += 1
-        if subseq_hangs > HANG_LIMIT:
+        subseq_hangs[0] += 1
+        if subseq_hangs[0] > HANG_LIMIT:
+            abandoned_inputs[0] += 1
             return 1
     else:
-        subseq_hangs = 0
+        subseq_hangs[0] = 0
 
     save_if_interesting(out_buf, fault)
 
-    if stage_cur % 100 or stage_cur + 1 == stage_max:
-        show_stats()
+    if stage_cur[0] % 100 or stage_cur[0] + 1 == stage_max[0]:
+        show_stats()  # TODO: pass everything show_stats might need
 
     return 0
 
@@ -850,21 +857,21 @@ def handle_timeout(sig):
 def setup_dirs():
     """Prepare output directories."""
 
-    if os.mkdir(out_dir, 0700) and errno != os.EEXIST:
+    if os.mkdir(out_dir, 0o700) and errno != os.EEXIST:
         PFATAL("Unable to create '%s'", out_dir)
 
     tmp = "%s/queue" % out_dir
-    if os.mkdir(tmp, 0700):
+    if os.mkdir(tmp, 0o700):
         PFATAL("Unable to create '%s' (delete existing directories first)",
                tmp)
 
     tmp = "%s/crashes" % out_dir
-    if os.mkdir(tmp, 0700):
+    if os.mkdir(tmp, 0o700):
         PFATAL("Unable to create '%s' (delete existing directories first)",
                tmp)
 
     tmp = "%s/hangs", out_dir
-    if os.mkdir(tmp, 0700):
+    if os.mkdir(tmp, 0o700):
         PFATAL("Unable to create '%s' (delete existing directories first)",
                tmp)
 
